@@ -1,0 +1,332 @@
+/* =====================================================================
+   ESS — Employee Self-Service
+   Design tokens & styles — currently scoped to the login page and a
+   minimal dashboard shell. Extend this file as new pages are built.
+   Palette: cool ink + deep teal accent
+   Type: Space Grotesk for headings/brand, Inter for body & UI
+   ===================================================================== */
+
+:root {
+  --ink:            #1B2430;
+  --ink-soft:       #4B5563;
+  --ink-faint:      #8A93A0;
+  --bg:             #F3F5F7;
+  --surface:        #FFFFFF;
+  --border:         #DDE3E8;
+  --border-strong:  #C4CDD5;
+
+  --accent:         #2F5D62;
+  --accent-dark:    #20393C;
+  --accent-soft:    #E2EDEC;
+
+  --danger:         #B0503D;
+  --danger-soft:    #F7E7E2;
+
+  --success:        #2F7A5C;
+  --success-soft:   #E1F0E7;
+
+  --font-display: 'Space Grotesk', 'Segoe UI', sans-serif;
+  --font-body:    'Inter', 'Segoe UI', sans-serif;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --shadow-card: 0 1px 2px rgba(27, 36, 48, 0.06), 0 1px 0 rgba(27, 36, 48, 0.04);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+h1, h2, h3, h4, h5, .brand, .font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+a { color: var(--accent); }
+a:hover { color: var(--accent-dark); }
+
+/* ---------------------------------------------------------------- */
+/* Auth / login screen                                              */
+/* ---------------------------------------------------------------- */
+.auth-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+}
+@media (max-width: 900px) {
+  .auth-shell { grid-template-columns: 1fr; }
+  .auth-visual { display: none; }
+}
+
+.auth-visual {
+  background: var(--ink);
+  color: #EDF1F2;
+  position: relative;
+  padding: 56px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  overflow: hidden;
+}
+
+.auth-visual .grid-deco {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(circle at 30% 30%, black, transparent 75%);
+}
+
+.auth-visual .visual-content { position: relative; z-index: 1; }
+
+.auth-visual .room-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+  color: #C9D6D6;
+  width: fit-content;
+}
+
+.auth-visual h1 {
+  font-size: 2.6rem;
+  line-height: 1.15;
+  margin: 28px 0 12px;
+  max-width: 12ch;
+}
+
+.auth-visual p {
+  color: #B9C3C4;
+  max-width: 40ch;
+}
+
+.auth-form-side {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+}
+
+.auth-card .brand {
+  font-size: 1.25rem;
+  margin-bottom: 4px;
+}
+
+.auth-card .subtitle {
+  color: var(--ink-soft);
+  margin-bottom: 28px;
+}
+
+.form-label {
+  font-weight: 600;
+  font-size: 0.86rem;
+  color: var(--ink-soft);
+}
+
+.form-control {
+  border-color: var(--border-strong);
+  padding: 10px 12px;
+  font-size: 0.95rem;
+}
+.form-control:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.btn-accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-accent:hover, .btn-accent:focus {
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
+  color: #fff;
+}
+.btn-accent:disabled {
+  background: var(--accent);
+  opacity: 0.6;
+}
+
+.btn-outline-accent {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+  background: transparent;
+}
+.btn-outline-accent:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.auth-error {
+  display: none;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 0.88rem;
+  margin-bottom: 16px;
+}
+
+/* Password field with show/hide toggle */
+.password-field {
+  position: relative;
+}
+.password-field .form-control {
+  padding-right: 44px;
+}
+.password-toggle-btn {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: var(--ink-faint);
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.password-toggle-btn:hover {
+  color: var(--ink-soft);
+  background: var(--bg);
+}
+.password-toggle-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.password-toggle-btn svg {
+  width: 18px;
+  height: 18px;
+}
+.password-toggle-btn .icon-eye-off {
+  display: none;
+}
+.password-toggle-btn.is-visible .icon-eye {
+  display: none;
+}
+.password-toggle-btn.is-visible .icon-eye-off {
+  display: inline-flex;
+}
+
+/* Remember me checkbox */
+.remember-me-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 0;
+}
+.remember-me-row .form-check-input {
+  margin-left: 0;
+  cursor: pointer;
+}
+.remember-me-row .form-check-input:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+.remember-me-row .form-check-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.remember-me-row .form-check-label {
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- */
+/* App shell (minimal — just enough for the post-login dashboard).   */
+/* Extend this section as real admin pages get built.                */
+/* ---------------------------------------------------------------- */
+.app-nav {
+  position: sticky;
+  top: 0;
+  z-index: 1030;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+}
+.app-nav .nav-inner {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.app-nav .nav-user {
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+}
+
+.dashboard-shell {
+  min-height: calc(100vh - 64px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+}
+
+.dashboard-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 40px;
+  max-width: 420px;
+  width: 100%;
+  text-align: center;
+}
+
+.success-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--success-soft);
+  color: var(--success);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  margin-bottom: 18px;
+}
+
+.dashboard-card h1 {
+  font-size: 1.5rem;
+  margin-bottom: 10px;
+}
+
+.dashboard-card p {
+  color: var(--ink-soft);
+  margin: 0;
+}
