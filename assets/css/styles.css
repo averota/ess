@@ -261,32 +261,156 @@ a:hover { color: var(--accent-dark); }
 }
 
 /* ---------------------------------------------------------------- */
-/* App shell (minimal — just enough for the post-login dashboard).   */
-/* Extend this section as real admin pages get built.                */
+/* App shell — shared by every page under /pages/.                   */
+/* Structure (see assets/partials/sidebar.html + assets/js/sidebar.js */
+/* for how it's assembled):                                          */
+/*   .app-shell (flex row)                                           */
+/*     .app-main (flex column, grows)                                */
+/*       .page-topbar  — toggle button + page title                  */
+/*       .page-content — actual page content                         */
+/*     .app-sidebar (left side; width animates 0 <-> open)           */
 /* ---------------------------------------------------------------- */
-.app-nav {
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  align-items: stretch;
+}
+
+.app-main {
+  flex: 1 1 auto;
+  min-width: 0; /* let flex children shrink instead of overflowing */
+  display: flex;
+  flex-direction: column;
+}
+
+.page-topbar {
   position: sticky;
   top: 0;
-  z-index: 1030;
+  z-index: 1020;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   padding: 0 24px;
   min-height: 64px;
   display: flex;
   align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
 }
-.app-nav .nav-inner {
-  width: 100%;
-  max-width: 1100px;
-  margin: 0 auto;
+
+.sidebar-toggle-btn {
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--ink-soft);
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.sidebar-toggle-btn:hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+.sidebar-toggle-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.page-title {
+  font-size: 1.15rem;
+  margin: 0;
+}
+
+.page-content {
+  flex: 1 1 auto;
+}
+
+/* Right-side sidebar: width animates open/closed so content is pushed,
+   never covered. Inner content keeps a fixed width so it doesn't reflow
+   mid-transition — the parent's overflow:hidden just clips it while
+   collapsed. */
+.app-sidebar {
+  order: -1; /* visually left, regardless of DOM/markup order */
+  width: 0;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: var(--surface);
+  border-right: 1px solid transparent;
+  transition: width 0.22s ease, border-color 0.22s ease;
+}
+.app-shell.sidebar-open .app-sidebar {
+  width: 260px;
+  border-right-color: var(--border);
+}
+
+.sidebar-inner {
+  width: 260px;
+  height: 100%;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 16px;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 auto;
+}
+
+.sidebar-link {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-.app-nav .nav-user {
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
   color: var(--ink-soft);
-  font-size: 0.86rem;
+  font-weight: 500;
+  font-size: 0.92rem;
+  text-decoration: none;
+}
+.sidebar-link svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.sidebar-link:hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+.sidebar-link.is-active {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-weight: 600;
+}
+
+.sidebar-footer {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+  margin-top: 14px;
+  flex-shrink: 0;
+}
+
+.sidebar-user {
+  margin-bottom: 10px;
+}
+.sidebar-user-name {
+  font-weight: 600;
+  font-size: 0.92rem;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar-user-role {
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 
 .dashboard-shell {
@@ -329,4 +453,461 @@ a:hover { color: var(--accent-dark); }
 .dashboard-card p {
   color: var(--ink-soft);
   margin: 0;
+}
+
+/* ---------------------------------------------------------------- */
+/* Data-table pages (Employees, and any future list/manage page)     */
+/* ---------------------------------------------------------------- */
+.page-wrap {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.hidden { display: none !important; }
+
+.room-meta-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.room-meta-bar h2 {
+  font-size: 1.4rem;
+  margin: 0 0 4px;
+}
+.room-meta-bar .meta {
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  margin: 0;
+}
+
+.btn-ghost {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+.btn-ghost:hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.btn-icon-only {
+  border: none;
+  background: transparent;
+  color: var(--ink-faint);
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.btn-icon-only:hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+.btn-icon-only svg {
+  width: 16px;
+  height: 16px;
+}
+
+.dropdown-menu .dropdown-item svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.btn-emerald {
+  background: var(--success);
+  border-color: var(--success);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-emerald:hover { filter: brightness(0.92); color: #fff; }
+
+.btn-amber {
+  background: #B07A2F;
+  border-color: #B07A2F;
+  color: #fff;
+  font-weight: 600;
+}
+.btn-amber:hover { filter: brightness(0.92); color: #fff; }
+
+.btn-rose {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-rose:hover { filter: brightness(0.92); color: #fff; }
+
+/* Panels: inline error/status banners */
+.panel {
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-size: 0.88rem;
+  margin-bottom: 16px;
+}
+.panel-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.panel-status {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+}
+.num-emerald { color: var(--success); font-weight: 600; }
+.num-amber   { color: #B07A2F; font-weight: 600; }
+.num-rose    { color: var(--danger); font-weight: 600; }
+
+.empty-state {
+  text-align: center;
+  color: var(--ink-faint);
+  padding: 32px 16px;
+  font-size: 0.92rem;
+}
+
+/* Stat cards row (headcount, female headcount, etc.) */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 16px 18px;
+}
+.stat-card-label {
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.stat-card-value {
+  font-family: var(--font-display);
+  font-size: 1.7rem;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1;
+}
+.stat-card-value.is-loading {
+  color: var(--ink-faint);
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+/* Generic manage/table card */
+.room-manage-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.table-card { margin-bottom: 20px; }
+
+.table-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.file-meta {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+.data-table thead th {
+  text-align: left;
+  background: var(--bg);
+  color: var(--ink-soft);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+}
+.data-table tbody td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--ink);
+  vertical-align: middle;
+}
+.data-table tbody tr:last-child td { border-bottom: none; }
+.data-table tbody tr:hover { background: var(--bg); }
+.data-table .idx-col { width: 40px; color: var(--ink-faint); }
+.data-table .actions-col { width: 90px; }
+.actions-wrap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Employee directory list (#viewListTable) shows Employee ID, Name,
+   Position, Department, Business unit, Supervisor, Hired date, and
+   Status (Role/Probation end/Email are hidden here but still fetched,
+   for the edit form) — sized to fit a laptop screen without relying on
+   horizontal scroll. Scoped here (not on .data-table generally) so the
+   upload-preview table and other pages keep their normal sizing.
+   table-layout: fixed + per-column widths keep the whole table around
+   ~1000px; long values ellipsis-truncate instead of forcing it wider. */
+#viewListTable {
+  table-layout: fixed;
+  font-size: 0.74rem;
+}
+#viewListTable thead th {
+  font-size: 0.64rem;
+  padding: 7px 9px;
+}
+#viewListTable tbody td {
+  padding: 6px 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#viewListTable .idx-col { width: 30px; }
+#viewListTable th:nth-child(2), #viewListTable td:nth-child(2) { width: 85px; }  /* Employee ID */
+#viewListTable th:nth-child(3), #viewListTable td:nth-child(3) { width: 150px; } /* Name */
+#viewListTable th:nth-child(4), #viewListTable td:nth-child(4) { width: 140px; } /* Position */
+#viewListTable th:nth-child(5), #viewListTable td:nth-child(5) { width: 140px; } /* Department */
+#viewListTable th:nth-child(6), #viewListTable td:nth-child(6) { width: 150px; } /* Business unit */
+#viewListTable th:nth-child(7), #viewListTable td:nth-child(7) { width: 140px; } /* Supervisor */
+#viewListTable th:nth-child(8), #viewListTable td:nth-child(8) { width: 95px; }  /* Hired date */
+#viewListTable th:nth-child(9), #viewListTable td:nth-child(9) { width: 90px; }  /* Status */
+#viewListTable .actions-col { width: 64px; }
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+.status-badge.is-active {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.status-badge.is-terminated {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* Add/edit employee modal: smaller footprint + smaller text than the
+   default Bootstrap modal-lg + .form-control sizing, since this form
+   packs in 12 fields. Scoped to #employeeModal — .form-control/
+   .form-label/.modal-* are shared with the rest of the app (e.g. the
+   login form) and should keep their normal size everywhere else. */
+#employeeModal .modal-dialog {
+  max-width: 540px;
+}
+#employeeModal .modal-header,
+#employeeModal .modal-footer {
+  padding: 10px 16px;
+}
+#employeeModal .modal-body {
+  padding: 12px 16px;
+}
+#employeeModal .modal-title {
+  font-size: 0.98rem;
+}
+#employeeModal .row.g-3 {
+  --bs-gutter-x: 0.6rem;
+  --bs-gutter-y: 0.55rem;
+}
+#employeeModal .form-label {
+  font-size: 0.74rem;
+  margin-bottom: 2px;
+}
+#employeeModal .form-control,
+#employeeModal .form-select {
+  font-size: 0.8rem;
+  padding: 5px 8px;
+  min-height: unset;
+}
+
+/* Upload panel */
+.upload-hint {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 0.85rem;
+}
+
+.file-picker {
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 28px 16px;
+  text-align: center;
+  background: var(--bg);
+}
+.file-picker label {
+  cursor: pointer;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.file-picker svg {
+  width: 28px;
+  height: 28px;
+  color: var(--ink-faint);
+}
+.file-picker .primary {
+  font-weight: 600;
+  color: var(--ink);
+}
+.file-picker .secondary {
+  font-size: 0.82rem;
+  color: var(--ink-faint);
+}
+.file-picker.compact {
+  padding: 14px 16px;
+}
+.file-picker.compact .secondary { display: none; }
+
+.stat-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+}
+.stat-item {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stat-value {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  color: var(--ink);
+}
+
+.btn-group-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Small overlay dialogs (edit-row / confirm / prompt) */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(27, 36, 48, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1080;
+  padding: 16px;
+}
+.modal-box {
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  padding: 22px;
+  max-width: 420px;
+  width: 100%;
+  box-shadow: 0 12px 32px rgba(27, 36, 48, 0.22);
+}
+.modal-box h3 {
+  font-size: 1.1rem;
+  margin-bottom: 14px;
+}
+.modal-box p {
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  margin-bottom: 16px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+.req-text { color: var(--danger); }
+
+/* Toasts */
+.toast-stack {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1090;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.toast-item {
+  background: var(--ink);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  padding: 10px 16px;
+  font-size: 0.86rem;
+  box-shadow: 0 6px 18px rgba(27, 36, 48, 0.25);
+  max-width: 320px;
+}
+.toast-item.is-success { background: var(--success); }
+.toast-item.is-danger  { background: var(--danger); }
+
+.danger-zone {
+  border: 1px solid var(--danger-soft);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  margin-top: 20px;
+}
+.danger-zone h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--danger);
+  font-size: 1rem;
+  margin-bottom: 6px;
+}
+.danger-zone h3 svg { width: 18px; height: 18px; }
+.danger-zone p {
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  margin-bottom: 12px;
 }

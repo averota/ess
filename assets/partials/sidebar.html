@@ -1,0 +1,43 @@
+<!--
+  Sidebar partial — injected into <aside id="sidebarRoot"></aside> by
+  assets/js/sidebar.js. Not a standalone page; fetched and dropped in via
+  fetch() + innerHTML. See assets/js/sidebar.js for the full contract
+  each page must follow to use this.
+-->
+<div class="sidebar-inner">
+  <nav class="sidebar-nav">
+    <a href="dashboard.html" class="sidebar-link" data-page="dashboard">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 9.5 12 3l9 6.5"></path>
+        <path d="M5 10v10a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V10"></path>
+      </svg>
+      Dashboard
+    </a>
+    <a href="employees.html" class="sidebar-link" data-page="employees">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+        <circle cx="9" cy="7" r="4"></circle>
+        <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+        <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+      </svg>
+      Employees
+    </a>
+    <a href="leaves.html" class="sidebar-link" data-page="leaves">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="18" rx="2"></rect>
+        <path d="M16 2v4M8 2v4M3 10h18"></path>
+      </svg>
+      Leaves
+    </a>
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="sidebar-user">
+      <div class="sidebar-user-name" id="sidebarUserName">—</div>
+      <div class="sidebar-user-role" id="sidebarUserRole"></div>
+    </div>
+    <button type="button" class="btn btn-outline-accent btn-sm w-100" id="sidebarSignOutBtn">
+      Sign out
+    </button>
+  </div>
+</div>

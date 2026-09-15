@@ -10,14 +10,20 @@ by Supabase (Postgres + Auth), hostable on GitHub Pages.
 .
 ├── index.html              # Login page
 ├── pages/
-│   └── dashboard.html      # Post-login landing page
+│   ├── dashboard.html      # Post-login landing page
+│   ├── employees.html      # Placeholder — employee directory (coming soon)
+│   └── leaves.html         # Placeholder — leave requests (coming soon)
 ├── assets/
 │   ├── css/styles.css
+│   ├── partials/
+│   │   └── sidebar.html        # Sidebar markup, injected by sidebar.js
 │   └── js/
 │       ├── supabaseClient.js   # Shared Supabase client — fill in your keys here
-│       └── password-toggle.js
+│       ├── password-toggle.js
+│       └── sidebar.js          # Shared admin sidebar/topbar + auth guard
 └── supabase/
-    └── 01_employee_info_schema.sql   # Run this in the Supabase SQL Editor
+    ├── 01_employee_info_schema.sql          # Run this in the Supabase SQL Editor
+    └── 02_add_supervisor_and_probation.sql  # One-time migration if you ran 01 before these columns existed
 ```
 
 ## 1. Create the Supabase project
@@ -83,6 +89,55 @@ folder with any static server (e.g. `npx serve .`). Sign in with the email
 and password you set up in step 4; you should land on the dashboard and see
 your name once linked.
 
+## Building a new admin page (using the shared sidebar)
+
+Every protected page under `pages/` follows the same skeleton — copy it
+from `pages/dashboard.html`:
+
+```html
+<body data-page="employees">  <!-- must match a data-page on a sidebar link -->
+<div class="app-shell" id="appShell">
+  <div class="app-main">
+    <header class="page-topbar">
+      <button type="button" class="sidebar-toggle-btn" id="sidebarToggle"
+              aria-expanded="false" aria-label="Toggle menu">☰-icon</button>
+      <h1 class="page-title">Employees</h1>
+    </header>
+    <main class="page-content">
+      <!-- page content -->
+    </main>
+  </div>
+  <aside class="app-sidebar" id="sidebarRoot"></aside>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../assets/js/supabaseClient.js"></script>
+<script src="../assets/js/sidebar.js"></script>
+</body>
+```
+
+`sidebar.js` handles everything from there: it requires a session
+(redirecting to login if there isn't one), checks whether the linked
+employee is an admin, injects `assets/partials/sidebar.html` into
+`#sidebarRoot` only if so (non-admins get no sidebar — the toggle button
+hides itself), wires the show/hide toggle (persisted across page loads),
+highlights the current page's nav link, and fills in the name/sign-out
+footer.
+
+If your page needs the session/employee data too, listen for the event
+it dispatches once everything's ready, instead of re-fetching:
+
+```js
+window.addEventListener('ess:ready', (e) => {
+  const { session, employee, employeeError } = e.detail;
+  // ... page-specific rendering ...
+});
+```
+
+This assumes the page lives directly under `pages/` (same depth as
+`dashboard.html`), since `sidebar.js` uses `../assets/...` and
+`../index.html` as relative paths.
+
 ## Deploying to GitHub Pages
 
 1. Push this repo to a **public** GitHub repository.
@@ -96,13 +151,20 @@ your name once linked.
 - **Login**: email + password via Supabase Auth, with a "remember me" toggle
   (persists the session in `localStorage` when checked, `sessionStorage`
   — cleared on browser close — when not).
+- **Sidebar/navigation**: admin-only, collapsible, right-hand side, and
+  pushes the page content rather than overlaying it (see "Building a new
+  admin page" above). Shows the signed-in employee's name and a sign-out
+  button in its footer. Non-admin logins get no sidebar for now.
 - **Dashboard**: confirms a successful login and shows the linked employee's
   name if their account has been linked (step 4); otherwise prompts them to
   ask their admin to link it.
+- **Employees / Leaves pages**: placeholders using the same shared shell,
+  proving the sidebar works across pages — real functionality still to
+  come.
 - **RLS**: every table restricts writes to admins (`role = 1`); employees
   can read their own row, admins can read/write everyone's. See the SQL
   file's `is_admin()` / `current_employee_uuid()` helpers and the policies
   at the bottom of the file.
 
-Not built yet: signup/password-reset flows, the employee directory UI, and
-leave requests/approvals — next modules.
+Not built yet: signup/password-reset flows, and the real employee
+directory and leave request/approval functionality — next modules.
