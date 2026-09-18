@@ -660,8 +660,10 @@ a:hover { color: var(--accent-dark); }
   color: var(--accent-dark);
 }
 .stat-card-icon svg {
+  display: block;
   width: 13px;
   height: 13px;
+  flex-shrink: 0;
 }
 /* Color variants — pick a distinct, muted accent per stat so the row
    reads at a glance instead of blurring into one color. */
@@ -712,11 +714,11 @@ a:hover { color: var(--accent-dark); }
   box-shadow: var(--shadow-card);
   overflow: hidden;
 }
+.table-card { margin-bottom: 20px; }
 
 #searchEmployeeInput {
   font-size: 0.8rem;
 }
-.table-card { margin-bottom: 20px; }
 
 #filtersCollapse {
   margin-top: 5px;
