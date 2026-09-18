@@ -43,6 +43,17 @@ const SCHEMA_FIELDS = {
 const REQUIRED_FIELDS = ['name', 'gender', 'position', 'department', 'business_unit', 'hired_date'];
 const DATE_FIELDS = ['hired_date', 'probation_end_date', 'last_day'];
 
+// Bulk upload accepts "F"/"M" as shorthand for "female"/"male" gender
+// values, alongside the full words — case-insensitive and trimmed either
+// way. Anything else is left as-is so the existing female/male validation
+// below still catches it as invalid.
+function normalizeGenderValue(val) {
+    const norm = String(val ?? '').trim().toLowerCase();
+    if (norm === 'f') return 'female';
+    if (norm === 'm') return 'male';
+    return norm;
+}
+
 const HEADER_LABELS = {
     employee_id: 'Employee ID',
     name: 'Name',
@@ -63,13 +74,21 @@ function normalizeHeader(h) {
 }
 
 // Same date-cell normalization approach as holidays.js: handles JS Date
-// objects (XLSX with cellDates:true, read via UTC getters to avoid a
-// local-timezone off-by-one) as well as plain strings from CSV.
+// objects (from XLSX with cellDates:true) as well as plain strings from
+// CSV.
+//
+// SheetJS builds cellDates Date objects using *local* time components
+// (new Date(1899, 11, 30) plus the day count, entirely in local time) —
+// not UTC — so reading them back out has to use the local getters
+// (getFullYear/getMonth/getDate) too. Using the UTC getters here used to
+// shift the date backward by a day for anyone in a timezone ahead of UTC
+// (e.g. a May 1 cell read out as April 30 at UTC+7), since local midnight
+// on a positive offset falls on the *previous* UTC calendar day.
 function normalizeDateCell(value) {
     if (value instanceof Date && !isNaN(value)) {
-        const y = value.getUTCFullYear();
-        const m = String(value.getUTCMonth() + 1).padStart(2, '0');
-        const d = String(value.getUTCDate()).padStart(2, '0');
+        const y = value.getFullYear();
+        const m = String(value.getMonth() + 1).padStart(2, '0');
+        const d = String(value.getDate()).padStart(2, '0');
         return `${y}-${m}-${d}`;
     }
     const str = String(value ?? '').trim();
@@ -263,9 +282,9 @@ function editRowDialog(row) {
                 alert(`${missing.map(f => HEADER_LABELS[f] || f).join(', ')} ${missing.length > 1 ? 'are' : 'is'} required.`);
                 return;
             }
-            const genderVal = String(updated.gender || '').toLowerCase();
+            const genderVal = normalizeGenderValue(updated.gender);
             if (genderVal !== 'female' && genderVal !== 'male') {
-                alert('Gender must be "female" or "male".');
+                alert('Gender must be "female"/"F" or "male"/"M".');
                 return;
             }
             updated.gender = genderVal;
@@ -387,6 +406,7 @@ function setUploadPanelOpen(open) {
     viewListContainer.classList.toggle('hidden', open);
     statsGrid.classList.toggle('hidden', open);
     metaBar.classList.toggle('hidden', open);
+    statusContainer.classList.add('hidden');
     if (open) {
         resetUploadPreview();
     }
@@ -1446,7 +1466,9 @@ function processRows(jsonRows) {
             if (val === undefined || val === null || val === '') { out[field] = null; continue; }
             if (DATE_FIELDS.includes(field)) {
                 out[field] = normalizeDateCell(val);
-            } else if (field === 'gender' || field === 'role') {
+            } else if (field === 'gender') {
+                out[field] = normalizeGenderValue(val);
+            } else if (field === 'role') {
                 out[field] = String(val).trim().toLowerCase();
             } else {
                 const str = String(val).trim();
@@ -1590,7 +1612,13 @@ function renderPreviewRows(headerEl, bodyEl, fields, rows, cap = 1000, capNote =
 
         fields.forEach(field => {
             const td = document.createElement('td');
-            td.textContent = row[field] !== null && row[field] !== undefined ? row[field] : '';
+            let displayVal = row[field] !== null && row[field] !== undefined ? row[field] : '';
+            // Underlying value stays the lowercase full word ("female"/
+            // "male") the RPCs expect — only the preview display is
+            // capitalized, regardless of whether the source file had
+            // "F", "m", "FEMALE", etc.
+            if (field === 'gender' && displayVal) displayVal = capitalize(displayVal);
+            td.textContent = displayVal;
             tr.appendChild(td);
         });
 
