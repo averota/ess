@@ -9,6 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="../assets/css/styles.css" rel="stylesheet">
+<link href="../assets/css/leaves.css" rel="stylesheet">
 </head>
 <body data-page="leaves">
 
@@ -20,15 +21,88 @@
           <path d="M3 6h18M3 12h18M3 18h18"></path>
         </svg>
       </button>
-      <h1 class="page-title">Leaves</h1>
+      <h1 class="page-title">Leaves requests</h1>
     </header>
 
     <main class="page-content">
-      <div class="dashboard-shell">
-        <div class="dashboard-card">
-          <h1>Leave requests</h1>
-          <p>This page is coming soon — it'll handle leave requests and approvals here.</p>
+      <div class="page-wrap" id="leavesContent" style="display: none;">
+
+        <div class="meta-bar" id="metaBar">
+          <div>
+            <p class="meta">Submit and track your leave, and review requests from your team.</p>
+          </div>
+          <div class="btn-group-actions">
+            <button type="button" class="btn btn-sm btn-ghost btn-icon" id="refreshListBtn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              </svg>
+              <span id="refreshListBtnLabel">Refresh</span>
+            </button>
+            <button type="button" class="btn btn-sm btn-ghost btn-icon hidden" id="manageTypesBtn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 20h9"></path>
+                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+              </svg>
+              Manage leave types
+            </button>
+            <button type="button" class="btn btn-sm btn-accent btn-icon" id="newRequestBtn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 5v14M5 12h14"></path>
+              </svg>
+              New request
+            </button>
+          </div>
         </div>
+
+        <div class="stats-grid" id="statsGrid"></div>
+
+        <div class="room-manage-card table-card">
+          <div class="table-toolbar">
+            <h3>My requests</h3>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table" id="myRequestsTable">
+              <thead>
+                <tr>
+                  <th>Leave type</th>
+                  <th>Dates</th>
+                  <th>Days</th>
+                  <th>Status</th>
+                  <th>Reason</th>
+                  <th class="actions-col">Action</th>
+                </tr>
+              </thead>
+              <tbody id="myRequestsBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="room-manage-card table-card hidden" id="teamRequestsCard">
+          <div class="table-toolbar">
+            <div class="section-title-row">
+              <h3 id="teamRequestsTitle">Requests to review</h3>
+              <span class="pending-count-pill hidden" id="teamRequestsPendingPill"></span>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table" id="teamRequestsTable">
+              <thead>
+                <tr>
+                  <th class="employee-col">Employee</th>
+                  <th>Leave type</th>
+                  <th>Dates</th>
+                  <th>Days</th>
+                  <th>Status</th>
+                  <th>Reason</th>
+                  <th class="actions-col">Action</th>
+                </tr>
+              </thead>
+              <tbody id="teamRequestsBody"></tbody>
+            </table>
+          </div>
+        </div>
+
       </div>
     </main>
   </div>
@@ -36,8 +110,101 @@
   <aside class="app-sidebar" id="sidebarRoot"></aside>
 </div>
 
+<!-- New / on-behalf-of leave request -->
+<div class="modal fade" id="leaveRequestModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form id="leaveRequestForm">
+        <div class="modal-header">
+          <h5 class="modal-title">New leave request</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+
+          <div id="onBehalfOfField" class="hidden">
+            <label class="form-label" for="requestEmployeeSelect">Requesting for</label>
+            <select class="form-select form-select-sm" id="requestEmployeeSelect"></select>
+            <p id="onBehalfOfHint" class="mb-0"></p>
+          </div>
+
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label" for="leaveTypeInput">Leave type <span class="req-text">*</span></label>
+              <select class="form-select form-select-sm" id="leaveTypeInput" required></select>
+            </div>
+
+            <div class="col-6">
+              <label class="form-label" for="startDateInput">Start date <span class="req-text">*</span></label>
+              <input type="date" class="form-control form-control-sm" id="startDateInput" required>
+            </div>
+            <div class="col-6">
+              <label class="form-label" for="startHalfDayInput">Start</label>
+              <select class="form-select form-select-sm" id="startHalfDayInput">
+                <option value="full">Full day</option>
+                <option value="am">AM (morning)</option>
+                <option value="pm">PM (afternoon)</option>
+              </select>
+            </div>
+
+            <div class="col-6">
+              <label class="form-label" for="endDateInput">End date <span class="req-text">*</span></label>
+              <input type="date" class="form-control form-control-sm" id="endDateInput" required>
+            </div>
+            <div class="col-6">
+              <label class="form-label" for="endHalfDayInput">End</label>
+              <select class="form-select form-select-sm" id="endHalfDayInput">
+                <option value="full">Full day</option>
+                <option value="am">AM (morning)</option>
+                <option value="pm">PM (afternoon)</option>
+              </select>
+            </div>
+
+            <div class="col-12">
+              <div id="daysPreview"></div>
+            </div>
+
+            <div class="col-12">
+              <label class="form-label" for="reasonInput">Reason</label>
+              <textarea class="form-control form-control-sm" id="reasonInput" rows="3" placeholder="Optional — a short note for your supervisor"></textarea>
+            </div>
+          </div>
+
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-accent btn-sm" id="leaveRequestSubmitBtn">Submit request</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Manage leave types (admin) -->
+<div class="modal fade" id="manageTypesModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Manage leave types</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="lookup-manage-list" id="leaveTypesManageList"></div>
+        <div id="newLeaveTypeRow">
+          <input type="text" class="form-control form-control-sm" id="newLeaveTypeInput" placeholder="New leave type name">
+          <button type="button" class="btn btn-accent btn-sm" id="addLeaveTypeBtn">Add</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost btn-sm" data-bs-dismiss="modal">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/js/supabaseClient.js"></script>
 <script src="../assets/js/sidebar.js"></script>
+<script src="../assets/js/leaves.js"></script>
 </body>
 </html>

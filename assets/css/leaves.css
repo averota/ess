@@ -1,0 +1,145 @@
+/* =====================================================================
+   Leaves page — styles specific to /pages/leaves.html.
+   Shared tokens, .data-table, .stat-card, .room-manage-card,
+   .lookup-manage-*, .modal-overlay/.modal-box, .toast-*, .status-badge
+   base rules, and .btn-* all come from assets/css/styles.css — this
+   file only adds what's unique to this page.
+   ===================================================================== */
+
+/* ---------------------------------------------------------------- */
+/* Leave status badges (pending/approved/rejected/cancelled) — same
+   .status-badge shape styles.css already defines for employee
+   active/terminated, just with the extra states this page needs. */
+/* ---------------------------------------------------------------- */
+.status-badge.is-pending {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.status-badge.is-approved {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.status-badge.is-rejected {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.status-badge.is-cancelled {
+  background: var(--bg);
+  color: var(--ink-faint);
+}
+
+/* ---------------------------------------------------------------- */
+/* Requests tables                                                   */
+/* ---------------------------------------------------------------- */
+#myRequestsTable .reason-col,
+#teamRequestsTable .reason-col {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#myRequestsTable .actions-col,
+#teamRequestsTable .actions-col {
+  width: 150px;
+  white-space: nowrap;
+}
+#teamRequestsTable .employee-col {
+  width: 170px;
+}
+.half-day-tag {
+  color: var(--ink-faint);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+.rejection-note {
+  display: block;
+  color: var(--danger);
+  font-size: 0.78rem;
+  margin-top: 2px;
+}
+
+/* Team-requests card title gets a small pending-count pill so it reads
+   at a glance without opening the table. */
+.section-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pending-count-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+/* ---------------------------------------------------------------- */
+/* New request modal                                                 */
+/* ---------------------------------------------------------------- */
+#leaveRequestModal .modal-dialog {
+  max-width: 520px;
+}
+#leaveRequestModal .modal-body {
+  padding: 16px 20px;
+}
+#leaveRequestModal .row.g-3 {
+  --bs-gutter-x: 0.75rem;
+  --bs-gutter-y: 0.75rem;
+}
+#onBehalfOfField {
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-bottom: 4px;
+}
+#onBehalfOfField .form-label {
+  color: var(--accent-dark);
+}
+#onBehalfOfHint {
+  font-size: 0.78rem;
+  color: var(--accent-dark);
+  margin-top: 4px;
+}
+.half-day-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+#daysPreview {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  margin-top: 4px;
+}
+#daysPreview strong {
+  color: var(--ink);
+  font-family: var(--font-display);
+}
+
+/* ---------------------------------------------------------------- */
+/* Manage leave types modal — reuses .lookup-manage-* from styles.css */
+/* ---------------------------------------------------------------- */
+#manageTypesModal .modal-dialog {
+  max-width: 420px;
+}
+#newLeaveTypeRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+#newLeaveTypeRow .form-control {
+  flex: 1 1 auto;
+}
+
+/* ---------------------------------------------------------------- */
+/* Empty-state nudge on the review card when there's nothing pending */
+/* ---------------------------------------------------------------- */
+.review-empty-note {
+  color: var(--ink-faint);
+  font-size: 0.85rem;
+}
