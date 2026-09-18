@@ -83,6 +83,45 @@ function formatDateShort(dateStr) {
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+// Plain string comparison works here since dates are always 'YYYY-MM-DD'
+// (lexicographic order == chronological order for that format).
+function dateRangesOverlap(aStart, aEnd, bStart, bEnd) {
+    return aStart <= bEnd && bStart <= aEnd;
+}
+
+// Client-side heads-up only — checks whole-day overlap (not AM/PM) for
+// the given employee against requests already in `allRequests` that are
+// still pending or approved (status 0/1; cancelled/rejected don't
+// block), across every leave type, excluding `excludeId` so editing a
+// request doesn't flag itself.
+//
+// IMPORTANT: this can only warn about overlaps the current user's RLS
+// visibility actually includes — mine, or (if I'm their supervisor or
+// an admin) a team member's. A non-admin filing on behalf of a same-
+// department teammate they don't supervise (list_my_leave_delegates())
+// won't have that teammate's existing requests in `allRequests`, so
+// this check can't catch a conflict there. The real backstop is the
+// leave_requests_no_overlap exclusion constraint in
+// 03_leave_requests_no_overlap.sql, which always applies server-side
+// regardless of what the client can see.
+function findOverlappingRequest(employeeId, startDate, endDate, excludeId = null) {
+    return allRequests.find(r =>
+        r.employee_id === employeeId &&
+        r.id !== excludeId &&
+        (r.status === 0 || r.status === 1) &&
+        dateRangesOverlap(startDate, endDate, r.start_date, r.end_date)
+    ) || null;
+}
+
+function describeOverlap(req) {
+    const range = req.start_date === req.end_date
+        ? formatDateShort(req.start_date)
+        : `${formatDateShort(req.start_date)} – ${formatDateShort(req.end_date)}`;
+    const type = embedded(req.leave_type, 'leave_type') || 'leave';
+    const statusWord = req.status === 0 ? 'pending' : 'approved';
+    return `${range} (${type}, ${statusWord})`;
+}
+
 // Embedded relations (e.g. `employee:employee_id(name)`) can come back
 // as either an object or a single-item array depending on the query
 // shape — same quirk employees.js works around for supervisor_info.
@@ -198,7 +237,6 @@ const otherLeaveTabItem = document.getElementById('otherLeaveTabItem');
 const teamRequestsPendingPill = document.getElementById('teamRequestsPendingPill');
 
 const myRequestsBody = document.getElementById('myRequestsBody');
-const teamRequestsTitle = document.getElementById('teamRequestsTitle');
 const teamRequestsBody = document.getElementById('teamRequestsBody');
 
 const leaveRequestForm = document.getElementById('leaveRequestForm');
@@ -220,6 +258,22 @@ const leaveRequestSubmitBtn = document.getElementById('leaveRequestSubmitBtn');
 const newLeaveTypeInput = document.getElementById('newLeaveTypeInput');
 const addLeaveTypeBtn = document.getElementById('addLeaveTypeBtn');
 const leaveTypesManageList = document.getElementById('leaveTypesManageList');
+
+// Filter bar (Leave type / Year / Status) — same collapsible design as
+// the employee directory's filter bar in employees.js.
+const filterLeaveTypeBtn = document.getElementById('filterLeaveTypeBtn');
+const filterLeaveTypeList = document.getElementById('filterLeaveTypeList');
+const filterYearInput = document.getElementById('filterYearInput');
+const filterStatusInput = document.getElementById('filterStatusInput');
+const clearAllFiltersBtn = document.getElementById('clearAllFiltersBtn');
+const activeFilterCount = document.getElementById('activeFilterCount');
+
+// Selected leave_type_id values (as strings) for the Leave type checkbox
+// multi-select filter. Empty set == "all" (no filtering on it).
+const filterSelection = {
+    leaveTypes: new Set()
+};
+let filteredRequests = []; // allRequests after Leave type / Year / Status filters are applied
 
 window.addEventListener('ess:ready', onEssReady);
 
@@ -253,10 +307,12 @@ async function init() {
     await checkSupervisorStatus();
     applyRoleVisibility();
     wireEvents();
+    populateYearFilter();
 
     await Promise.all([loadLeaveTypes(), loadSelectableEmployees()]);
     populateLeaveTypeSelect();
     populateEmployeeSelect();
+    populateLeaveTypeFilter();
 
     await loadRequests();
 }
@@ -275,6 +331,15 @@ function wireEvents() {
 
     manageTypesBtn.addEventListener('click', openManageTypesModal);
     addLeaveTypeBtn.addEventListener('click', onAddLeaveType);
+
+    filterYearInput.addEventListener('change', applyFilters);
+    filterStatusInput.addEventListener('change', applyFilters);
+    wireMultiSelectFilter(filterLeaveTypeList, filterSelection.leaveTypes);
+    document.querySelectorAll('.btn-link-clear[data-clear-target]').forEach(btn => {
+        btn.addEventListener('click', () => onClearMultiSelectFilter(btn.dataset.clearTarget));
+    });
+    clearAllFiltersBtn.addEventListener('click', clearAllFilters);
+    initFilterDropdowns();
 }
 
 async function onRefreshClick() {
@@ -359,6 +424,139 @@ function populateLeaveTypeSelect() {
         .join('');
 }
 
+// ---------------------------------------------------------------------
+// Request filters (Leave type / Year / Status)
+// ---------------------------------------------------------------------
+
+// Leave type filter intentionally lists disabled types too (same as the
+// Department/Business unit filters on the employee directory), so past
+// requests filed under a since-disabled type can still be found.
+function populateLeaveTypeFilter() {
+    renderMultiSelectList(filterLeaveTypeList, leaveTypes, 'leave_type_id', 'leave_type', 'lt', filterSelection.leaveTypes);
+    updateMultiSelectButtonLabel(filterLeaveTypeBtn, 'Leave type', filterSelection.leaveTypes);
+}
+
+// Years 2025 → current year (by the request's start date), defaulting
+// to the current year.
+function populateYearFilter() {
+    const currentYear = new Date().getFullYear();
+    const startYear = 2025;
+    let options = '';
+    for (let y = startYear; y <= currentYear; y++) {
+        options += `<option value="${y}">${y}</option>`;
+    }
+    filterYearInput.innerHTML = options || `<option value="${currentYear}">${currentYear}</option>`;
+    filterYearInput.value = String(currentYear);
+}
+
+// Builds the checkbox list inside the Leave type filter dropdown,
+// keeping any selection that's still valid (e.g. after loadLeaveTypes()
+// re-fetches because a new type was just added). Generic over
+// value/label keys, same helper shape as the employee directory's.
+function renderMultiSelectList(listEl, rows, valueKey, labelKey, idPrefix, selectedSet) {
+    const validValues = new Set(rows.map(r => String(r[valueKey])));
+    Array.from(selectedSet).forEach(v => { if (!validValues.has(v)) selectedSet.delete(v); });
+
+    if (rows.length === 0) {
+        listEl.innerHTML = '<div class="filter-multiselect-empty">None yet</div>';
+        return;
+    }
+
+    listEl.innerHTML = rows.map(r => {
+        const value = String(r[valueKey]);
+        const id = `filterOpt_${idPrefix}_${value}`;
+        const checked = selectedSet.has(value) ? 'checked' : '';
+        return `
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" value="${escapeHtml(value)}" id="${id}" ${checked}>
+                <label class="form-check-label" for="${id}">${escapeHtml(r[labelKey])}</label>
+            </div>`;
+    }).join('');
+}
+
+// Delegated listener: any checkbox toggled inside the list updates the
+// backing Set and re-applies filters immediately (menu stays open thanks
+// to data-bs-auto-close="outside" on the dropdown toggle button).
+function wireMultiSelectFilter(listEl, selectedSet) {
+    listEl.addEventListener('change', (e) => {
+        const cb = e.target;
+        if (cb.type !== 'checkbox') return;
+        if (cb.checked) selectedSet.add(cb.value);
+        else selectedSet.delete(cb.value);
+
+        updateMultiSelectButtonLabel(filterLeaveTypeBtn, 'Leave type', selectedSet);
+        applyFilters();
+    });
+}
+
+function onClearMultiSelectFilter(target) {
+    if (target !== 'leaveType') return;
+    filterSelection.leaveTypes.clear();
+    filterLeaveTypeList.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+    updateMultiSelectButtonLabel(filterLeaveTypeBtn, 'Leave type', filterSelection.leaveTypes);
+    applyFilters();
+}
+
+function updateMultiSelectButtonLabel(btn, label, selectedSet) {
+    btn.textContent = selectedSet.size > 0 ? `${label} (${selectedSet.size})` : label;
+    btn.classList.toggle('active-filter', selectedSet.size > 0);
+}
+
+// The Leave type menu lives inside #leavesFilterCard, a .room-manage-card
+// with `overflow: hidden` — same clipping concern as the employee
+// directory's filter dropdowns. A "fixed" Popper strategy positions the
+// menu relative to the viewport instead, so it's never clipped.
+function initFilterDropdowns() {
+    const fixedPopperConfig = (defaultConfig) => ({ ...defaultConfig, strategy: 'fixed' });
+    new bootstrap.Dropdown(filterLeaveTypeBtn, { popperConfig: fixedPopperConfig });
+}
+
+// Resets every filter control (leave type, year, status) in one go.
+function clearAllFilters() {
+    filterSelection.leaveTypes.clear();
+    filterLeaveTypeList.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+    updateMultiSelectButtonLabel(filterLeaveTypeBtn, 'Leave type', filterSelection.leaveTypes);
+    filterYearInput.value = String(new Date().getFullYear());
+    filterStatusInput.value = '';
+    applyFilters();
+}
+
+// Filters allRequests down into filteredRequests, then re-renders both
+// tabs from it. Stats (renderStats()) intentionally stay based on the
+// full, unfiltered allRequests — the stat cards are a page-level
+// summary, not scoped to whatever's currently filtered in the tables.
+function applyFilters() {
+    const typeFilter = filterSelection.leaveTypes; // Set of leave_type_id strings, empty = all
+    const yearFilter = filterYearInput.value;       // e.g. '2026'
+    const statusFilter = filterStatusInput.value;   // '', '0'..'3'
+
+    filteredRequests = allRequests.filter(r => {
+        if (typeFilter.size > 0 && !typeFilter.has(String(r.leave_type_id))) return false;
+        if (yearFilter) {
+            const start = parseDateOnly(r.start_date);
+            if (!start || String(start.getFullYear()) !== yearFilter) return false;
+        }
+        if (statusFilter !== '' && String(r.status) !== statusFilter) return false;
+        return true;
+    });
+
+    updateActiveFilterBadge();
+    renderMyRequests();
+    renderTeamRequests();
+}
+
+// Year defaults to the current year (not an "all years" state), so it
+// only counts toward the badge when the user has picked a different one.
+function updateActiveFilterBadge() {
+    let count = 0;
+    if (filterSelection.leaveTypes.size > 0) count++;
+    if (filterYearInput.value && filterYearInput.value !== String(new Date().getFullYear())) count++;
+    if (filterStatusInput.value) count++;
+    activeFilterCount.textContent = String(count);
+    activeFilterCount.classList.toggle('d-none', count === 0);
+    clearAllFiltersBtn.disabled = count === 0;
+}
+
 function populateEmployeeSelect() {
     const others = selectableEmployees.filter(emp => emp.id !== myEmployeeId);
 
@@ -400,8 +598,7 @@ async function loadRequests() {
 
     allRequests = data || [];
     renderStats();
-    renderMyRequests();
-    renderTeamRequests();
+    applyFilters();
 }
 
 // ---------------------------------------------------------------------
@@ -441,10 +638,14 @@ function renderStats() {
 // My requests tab
 // ---------------------------------------------------------------------
 function renderMyRequests() {
-    const mine = allRequests.filter(r => r.employee_id === myEmployeeId);
+    const mineTotal = allRequests.filter(r => r.employee_id === myEmployeeId);
+    const mine = filteredRequests.filter(r => r.employee_id === myEmployeeId);
 
     if (mine.length === 0) {
-        myRequestsBody.innerHTML = `<tr><td colspan="6"><div class="empty-state">No leave requests yet — click "New request" to submit one.</div></td></tr>`;
+        const msg = mineTotal.length === 0
+            ? 'No leave requests yet — click "New request" to submit one.'
+            : 'No requests match the current filters.';
+        myRequestsBody.innerHTML = `<tr><td colspan="6"><div class="empty-state">${msg}</div></td></tr>`;
         return;
     }
 
@@ -491,21 +692,29 @@ function renderMyRequests() {
 // a supervisor gets no actions on it at all.
 // ---------------------------------------------------------------------
 function renderTeamRequests() {
-    const team = allRequests.filter(r => r.employee_id !== myEmployeeId);
+    const teamTotal = allRequests.filter(r => r.employee_id !== myEmployeeId);
 
-    if (team.length === 0) {
+    // Tab visibility and the pending pill reflect the *unfiltered* team
+    // set — someone's real pending count shouldn't disappear just
+    // because the leave type/year/status filters currently hide it.
+    if (teamTotal.length === 0) {
         otherLeaveTabItem.classList.add('hidden');
         return;
     }
     otherLeaveTabItem.classList.remove('hidden');
-    teamRequestsTitle.textContent = isAdmin ? 'All other requests' : 'Requests to review';
 
-    const pendingCount = team.filter(r => r.status === 0).length;
+    const pendingCount = teamTotal.filter(r => r.status === 0).length;
     if (pendingCount > 0) {
         teamRequestsPendingPill.textContent = pendingCount;
         teamRequestsPendingPill.classList.remove('hidden');
     } else {
         teamRequestsPendingPill.classList.add('hidden');
+    }
+
+    const team = filteredRequests.filter(r => r.employee_id !== myEmployeeId);
+    if (team.length === 0) {
+        teamRequestsBody.innerHTML = `<tr><td colspan="7"><div class="empty-state">No requests match the current filters.</div></td></tr>`;
+        return;
     }
 
     teamRequestsBody.innerHTML = team.map(r => `
@@ -653,6 +862,15 @@ async function onSubmitLeaveRequest(e) {
     // trigger turns out to be insert-only, it'll need to be extended to
     // fire BEFORE UPDATE too.
     if (editingRequestId) {
+        const existing = allRequests.find(r => r.id === editingRequestId);
+        if (existing) {
+            const overlap = findOverlappingRequest(existing.employee_id, startDate, endDate, editingRequestId);
+            if (overlap) {
+                showToast(`These dates overlap another request: ${describeOverlap(overlap)}.`, 'danger');
+                return;
+            }
+        }
+
         const payload = {
             leave_type_id: Number(leaveTypeInput.value),
             start_date: startDate,
@@ -667,7 +885,11 @@ async function onSubmitLeaveRequest(e) {
         leaveRequestSubmitBtn.disabled = false;
 
         if (error) {
-            showToast('Could not update request: ' + error.message, 'danger');
+            if (error.code === '23P01') {
+                showToast('These dates overlap another pending or approved request for this person.', 'danger');
+            } else {
+                showToast('Could not update request: ' + error.message, 'danger');
+            }
             return;
         }
         showToast('Leave request updated.', 'success');
@@ -682,6 +904,12 @@ async function onSubmitLeaveRequest(e) {
     const targetEmployeeId = onBehalfOfField.classList.contains('hidden')
         ? myEmployeeId
         : requestEmployeeSelect.value;
+
+    const overlap = findOverlappingRequest(targetEmployeeId, startDate, endDate);
+    if (overlap) {
+        showToast(`These dates overlap another request: ${describeOverlap(overlap)}.`, 'danger');
+        return;
+    }
 
     const payload = {
         employee_id: targetEmployeeId,
@@ -698,7 +926,9 @@ async function onSubmitLeaveRequest(e) {
     leaveRequestSubmitBtn.disabled = false;
 
     if (error) {
-        if (error.code === '42501' || /row-level security/i.test(error.message || '')) {
+        if (error.code === '23P01') {
+            showToast('These dates overlap another pending or approved request for this person.', 'danger');
+        } else if (error.code === '42501' || /row-level security/i.test(error.message || '')) {
             showToast('You can only file leave for yourself or a same-department teammate (not your supervisor).', 'danger');
         } else {
             showToast('Could not submit request: ' + error.message, 'danger');
@@ -846,6 +1076,7 @@ async function onAddLeaveType() {
     newLeaveTypeInput.value = '';
     await loadLeaveTypes();
     populateLeaveTypeSelect();
+    populateLeaveTypeFilter();
     renderManageTypesList();
     showToast('Leave type added.', 'success');
 }
@@ -860,6 +1091,7 @@ async function onToggleLeaveType(leaveTypeId, nextActive) {
     }
     await loadLeaveTypes();
     populateLeaveTypeSelect();
+    populateLeaveTypeFilter();
     renderManageTypesList();
     showToast(nextActive ? 'Leave type enabled.' : 'Leave type disabled.', 'success');
 }

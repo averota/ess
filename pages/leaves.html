@@ -57,71 +57,121 @@
 
         <div class="stats-grid" id="statsGrid"></div>
 
-        <!-- "My leave" vs "Other leave requests" tabs — the second tab
-             only appears once loadRequests() confirms there's anything
-             in it (i.e. I'm someone's supervisor or I'm admin); see
+        <!-- "My leave" vs "Other leave requests" tabs, and the request
+             filters (Leave type / Year / Status), share one toolbar row
+             — reuses .table-toolbar from styles.css to align the
+             Filters toggle with the tab header (same flex/
+             justify-content: space-between behavior as the employee
+             directory's search+filters row). The second tab only
+             appears once loadRequests() confirms there's anything in it
+             (i.e. I'm someone's supervisor or I'm admin); see
              renderTeamRequests() in leaves.js. -->
-        <ul class="nav nav-tabs leaves-tabs" id="leavesTab" role="tablist">
-          <li class="nav-item" role="presentation">
-            <button class="nav-link active" id="myLeaveTab" data-bs-toggle="tab" data-bs-target="#myLeavePane" type="button" role="tab" aria-controls="myLeavePane" aria-selected="true">
-              My leave
-            </button>
-          </li>
-          <li class="nav-item hidden" role="presentation" id="otherLeaveTabItem">
-            <button class="nav-link" id="otherLeaveTab" data-bs-toggle="tab" data-bs-target="#otherLeavePane" type="button" role="tab" aria-controls="otherLeavePane" aria-selected="false">
-              Other leave requests
-              <span class="pending-count-pill hidden" id="teamRequestsPendingPill"></span>
-            </button>
-          </li>
-        </ul>
+        <div class="room-manage-card table-card" id="leavesTabsCard">
+          <div class="table-toolbar leaves-tabs-toolbar">
+            <ul class="nav nav-tabs leaves-tabs" id="leavesTab" role="tablist">
+              <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="myLeaveTab" data-bs-toggle="tab" data-bs-target="#myLeavePane" type="button" role="tab" aria-controls="myLeavePane" aria-selected="true">
+                  My leave
+                </button>
+              </li>
+              <li class="nav-item hidden" role="presentation" id="otherLeaveTabItem">
+                <button class="nav-link" id="otherLeaveTab" data-bs-toggle="tab" data-bs-target="#otherLeavePane" type="button" role="tab" aria-controls="otherLeavePane" aria-selected="false">
+                  Other leave requests
+                  <span class="pending-count-pill hidden" id="teamRequestsPendingPill"></span>
+                </button>
+              </li>
+            </ul>
 
-        <div class="tab-content" id="leavesTabContent">
-          <div class="tab-pane fade show active" id="myLeavePane" role="tabpanel" aria-labelledby="myLeaveTab">
-            <div class="room-manage-card table-card">
-              <div class="table-toolbar">
-                <h3>My requests</h3>
+            <button type="button" class="btn btn-ghost btn-sm btn-icon" id="toggleFiltersBtn" data-bs-toggle="collapse" data-bs-target="#filtersCollapse" aria-expanded="false" aria-controls="filtersCollapse">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"></path></svg>
+              Filters
+              <span class="badge rounded-pill text-bg-secondary d-none" id="activeFilterCount">0</span>
+            </button>
+          </div>
+
+          <!-- Filter panel: shared by both tabs below (it's one filter
+               set applied to the same allRequests fetch — see
+               applyFilters() in leaves.js), so it opens directly above
+               whichever tab's table is currently showing. -->
+          <div class="collapse" id="filtersCollapse">
+            <div class="d-flex gap-2 flex-wrap align-items-center px-3 pb-3 pt-1">
+              <!-- Leave type: multi-select dropdown (checkboxes) -->
+              <div class="dropdown filter-multiselect">
+                <button type="button" class="btn btn-outline-secondary btn-sm dropdown-toggle" id="filterLeaveTypeBtn"
+                        data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                  Leave type
+                </button>
+                <div class="dropdown-menu filter-multiselect-menu p-0" id="filterLeaveTypeMenu" aria-labelledby="filterLeaveTypeBtn">
+                  <div class="filter-multiselect-header">
+                    <span>Leave type</span>
+                    <button type="button" class="btn-link-clear" data-clear-target="leaveType">Clear</button>
+                  </div>
+                  <div class="filter-multiselect-list" id="filterLeaveTypeList"></div>
+                </div>
               </div>
-              <div class="table-scroll">
-                <table class="data-table" id="myRequestsTable">
-                  <thead>
-                    <tr>
-                      <th>Leave type</th>
-                      <th>Dates</th>
-                      <th>Days</th>
-                      <th>Status</th>
-                      <th>Reason</th>
-                      <th class="actions-col">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody id="myRequestsBody"></tbody>
-                </table>
+
+              <!-- Year: single-select dropdown, filters by the request's start date. Populated 2025 → current year, defaults to the current year. -->
+              <select id="filterYearInput" class="form-select form-select-sm" style="width:auto;"></select>
+
+              <!-- Status: single-select dropdown -->
+              <select id="filterStatusInput" class="form-select form-select-sm" style="width:auto;">
+                <option value="">All statuses</option>
+                <option value="0">Pending</option>
+                <option value="1">Approved</option>
+                <option value="2">Rejected</option>
+                <option value="3">Cancelled</option>
+              </select>
+
+              <!-- Clears leave type, year, and status at once -->
+              <button type="button" class="btn btn-ghost btn-sm btn-icon ms-1" id="clearAllFiltersBtn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="M6 6l12 12"></path></svg>
+                Clear filters
+              </button>
+            </div>
+          </div>
+          <div class="tab-content" id="leavesTabContent">
+            <div class="tab-pane fade show active" id="myLeavePane" role="tabpanel" aria-labelledby="myLeaveTab">
+              <div class="room-manage-card table-card">
+                <div class="table-scroll">
+                  <table class="data-table" id="myRequestsTable">
+                    <thead>
+                      <tr>
+                        <th>Leave type</th>
+                        <th>Dates</th>
+                        <th>Days</th>
+                        <th>Status</th>
+                        <th>Reason</th>
+                        <th class="actions-col">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody id="myRequestsBody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div class="tab-pane fade" id="otherLeavePane" role="tabpanel" aria-labelledby="otherLeaveTab">
+              <div class="room-manage-card table-card">
+                <div class="table-scroll">
+                  <table class="data-table" id="teamRequestsTable">
+                    <thead>
+                      <tr>
+                        <th class="employee-col">Employee</th>
+                        <th>Leave type</th>
+                        <th>Dates</th>
+                        <th>Days</th>
+                        <th>Status</th>
+                        <th>Reason</th>
+                        <th class="actions-col">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody id="teamRequestsBody"></tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </div>
 
-          <div class="tab-pane fade" id="otherLeavePane" role="tabpanel" aria-labelledby="otherLeaveTab">
-            <div class="room-manage-card table-card">
-              <div class="table-toolbar">
-                <h3 id="teamRequestsTitle">Requests to review</h3>
-              </div>
-              <div class="table-scroll">
-                <table class="data-table" id="teamRequestsTable">
-                  <thead>
-                    <tr>
-                      <th class="employee-col">Employee</th>
-                      <th>Leave type</th>
-                      <th>Dates</th>
-                      <th>Days</th>
-                      <th>Status</th>
-                      <th>Reason</th>
-                      <th class="actions-col">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody id="teamRequestsBody"></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
         </div>
 
       </div>

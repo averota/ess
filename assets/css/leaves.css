@@ -33,12 +33,17 @@
    (same component #lookupModal already uses), restyled to sit flush
    with the page instead of Bootstrap's boxed default. The second tab
    starts hidden and is only revealed once renderTeamRequests() in
-   leaves.js confirms there's anything in it. */
+   leaves.js confirms there's anything in it.
+
+   The tabs live inside #leavesTabsCard's .table-toolbar alongside the
+   Filters toggle (see leaves.html), so the toolbar's own border-bottom
+   is what separates the row from the filter panel/table below — the
+   tabs no longer need their own border or bottom margin here. */
 /* ---------------------------------------------------------------- */
 .leaves-tabs {
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 16px;
+  margin: 0;
   gap: 4px;
+  flex: 1 1 auto;
 }
 .leaves-tabs .nav-link {
   display: inline-flex;
@@ -62,6 +67,23 @@
   color: var(--accent-dark);
   border-color: var(--accent);
   background: transparent;
+}
+
+/* ---------------------------------------------------------------- */
+/* Request filters (Leave type / Year / Status) — reuses the shared
+   .filter-multiselect-*, #filtersCollapse and #clearAllFiltersBtn
+   rules styles.css already defines for the employee directory's
+   filter bar. Only the Leave type toggle needs its own active-filter
+   accent here, since that button's id is specific to this page. */
+/* ---------------------------------------------------------------- */
+#filterLeaveTypeBtn.active-filter {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+  background: var(--accent-soft);
+}
+#filterYearInput,
+#filterStatusInput {
+  font-size: 0.8rem;
 }
 
 /* ---------------------------------------------------------------- */
