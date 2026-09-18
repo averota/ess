@@ -25,6 +25,15 @@
   --success:        #2F7A5C;
   --success-soft:   #E1F0E7;
 
+  --info:           #34608A;
+  --info-soft:      #E3EDF3;
+
+  --warning:        #A6791B;
+  --warning-soft:   #F6EFDB;
+
+  --violet:         #6C5B96;
+  --violet-soft:    #ECE8F4;
+
   --font-display: 'Space Grotesk', 'Segoe UI', sans-serif;
   --font-body:    'Inter', 'Segoe UI', sans-serif;
 
@@ -516,6 +525,21 @@ a:hover { color: var(--accent-dark); }
   height: 16px;
 }
 
+/* Refresh button: spins the icon and swaps the label to "Refreshing…"
+   while loadEmployees()/loadStats() are in flight (see onRefreshClick()
+   in employees.js), so it's clear a reload is happening even though it
+   usually resolves quickly. */
+#refreshListBtn.is-refreshing {
+  cursor: wait;
+}
+#refreshListBtn.is-refreshing svg {
+  animation: spin-refresh 0.7s linear infinite;
+}
+@keyframes spin-refresh {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
 .btn-icon-only {
   border: none;
   background: transparent;
@@ -593,38 +617,90 @@ a:hover { color: var(--accent-dark); }
   font-size: 0.92rem;
 }
 
-/* Stat cards row (headcount, female headcount, etc.) */
+/* Stat cards row (headcount, female headcount, etc.) — compact, so the
+   row reads as a quick-glance strip rather than dominating the page. */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
   margin-bottom: 20px;
 }
 .stat-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
   box-shadow: var(--shadow-card);
-  padding: 16px 18px;
+  padding: 10px 12px;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
 }
+.stat-card:hover {
+  box-shadow: 0 4px 12px rgba(27, 36, 48, 0.09);
+  transform: translateY(-1px);
+}
+.stat-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.stat-card-icon {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+}
+.stat-card-icon svg {
+  width: 13px;
+  height: 13px;
+}
+/* Color variants — pick a distinct, muted accent per stat so the row
+   reads at a glance instead of blurring into one color. */
+.stat-card--accent  { border-left-color: var(--accent); }
+.stat-card--accent  .stat-card-icon { background: var(--accent-soft);  color: var(--accent-dark); }
+
+.stat-card--violet  { border-left-color: var(--violet); }
+.stat-card--violet  .stat-card-icon { background: var(--violet-soft);  color: var(--violet); }
+
+.stat-card--info    { border-left-color: var(--info); }
+.stat-card--info    .stat-card-icon { background: var(--info-soft);    color: var(--info); }
+
+.stat-card--success { border-left-color: var(--success); }
+.stat-card--success .stat-card-icon { background: var(--success-soft); color: var(--success); }
+
+.stat-card--warning { border-left-color: var(--warning); }
+.stat-card--warning .stat-card-icon { background: var(--warning-soft); color: var(--warning); }
+
 .stat-card-label {
-  font-size: 0.78rem;
-  color: var(--ink-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  font-size: 0.68rem;
+  color: var(--ink-soft);
+  letter-spacing: 0.01em;
   font-weight: 600;
-  margin-bottom: 6px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .stat-card-value {
   font-family: var(--font-display);
-  font-size: 1.7rem;
+  font-size: 1.3rem;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
   color: var(--ink);
-  line-height: 1;
+  line-height: 1.15;
 }
 .stat-card-value.is-loading {
   color: var(--ink-faint);
-  font-size: 1rem;
+  font-size: 0.82rem;
   font-weight: 500;
 }
 
@@ -636,7 +712,104 @@ a:hover { color: var(--accent-dark); }
   box-shadow: var(--shadow-card);
   overflow: hidden;
 }
+
+#searchEmployeeInput {
+  font-size: 0.8rem;
+}
 .table-card { margin-bottom: 20px; }
+
+#filtersCollapse {
+  margin-top: 5px;
+}
+
+/* Checkbox multi-select filter dropdowns (Department / Business unit) on
+   the employee directory. Positioned via a "fixed" Popper strategy in JS
+   (see initFilterDropdowns() in employees.js) so the open menu floats
+   above the table instead of being clipped by .room-manage-card's
+   `overflow: hidden` when the filtered table is short. */
+.filter-multiselect-menu {
+  min-width: 240px;
+  max-width: 320px;
+  padding: 0;
+}
+.filter-multiselect-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-faint);
+  border-bottom: 1px solid var(--border);
+}
+.filter-multiselect-header .btn-link-clear {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--accent);
+  cursor: pointer;
+}
+.filter-multiselect-header .btn-link-clear:hover {
+  text-decoration: underline;
+  color: var(--accent-dark);
+}
+.filter-multiselect-list {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 6px 4px;
+}
+.filter-multiselect-list .form-check {
+  padding-left: 1.75rem;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  margin: 0;
+  border-radius: var(--radius-sm);
+}
+.filter-multiselect-list .form-check:hover {
+  background: var(--bg);
+}
+.filter-multiselect-list .form-check-label {
+  font-size: 0.85rem;
+  width: 100%;
+  cursor: pointer;
+}
+.filter-multiselect-list .form-check-input {
+  cursor: pointer;
+}
+.filter-multiselect-list .form-check-input:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+.filter-multiselect-empty {
+  padding: 10px 12px;
+  font-size: 0.8rem;
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+/* Filter toggle buttons (Department / Business unit) pick up an accent
+   outline once a selection is active, mirroring the existing
+   #activeFilterCount badge on the "Filters" toggle. */
+#filterDepartmentBtn.active-filter,
+#filterBusinessUnitBtn.active-filter {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+  background: var(--accent-soft);
+}
+
+/* "Clear filters" button: resets department/business unit/status/
+   portal-linked in one click; disabled (and visually muted) whenever
+   no filter is currently active. */
+#clearAllFiltersBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+#clearAllFiltersBtn:disabled:hover {
+  background: var(--surface);
+  color: var(--ink-soft);
+}
 
 .table-toolbar {
   display: flex;

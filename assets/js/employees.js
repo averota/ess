@@ -302,16 +302,31 @@ const appendBtn = document.getElementById('appendBtn');
 const overwriteBtn = document.getElementById('overwriteBtn');
 
 const refreshListBtn = document.getElementById('refreshListBtn');
+const refreshListBtnLabel = document.getElementById('refreshListBtnLabel');
 const exportExcelBtn = document.getElementById('exportExcelBtn');
 const viewListContainer = document.getElementById('viewListContainer');
 const viewListMeta = document.getElementById('viewListMeta');
 const viewListHeader = document.getElementById('viewListHeader');
 const viewListBody = document.getElementById('viewListBody');
-const filterBusinessUnitInput = document.getElementById('filterBusinessUnitInput');
+const filterDepartmentBtn = document.getElementById('filterDepartmentBtn');
+const filterDepartmentList = document.getElementById('filterDepartmentList');
+const filterBusinessUnitBtn = document.getElementById('filterBusinessUnitBtn');
+const filterBusinessUnitList = document.getElementById('filterBusinessUnitList');
 const filterStatusInput = document.getElementById('filterStatusInput');
+const filterPortalLinkedInput = document.getElementById('filterPortalLinkedInput');
+const clearAllFiltersBtn = document.getElementById('clearAllFiltersBtn');
+const searchEmployeeInput = document.getElementById('searchEmployeeInput');
+const activeFilterCount = document.getElementById('activeFilterCount');
 const supervisorSearchInput = document.getElementById('supervisorSearchInput');
 const supervisorMenu = document.getElementById('supervisorMenu');
 let displayedEmployees = []; // currently rendered rows (after filters), used by Export Excel
+
+// Selected values (as strings, matching dept_id/bu_id) for the two
+// checkbox multi-select filters. Empty set == "all" (no filtering on it).
+const filterSelection = {
+    departments: new Set(),
+    businessUnits: new Set()
+};
 
 window.addEventListener('ess:ready', onEssReady);
 
@@ -344,10 +359,18 @@ function wireEvents() {
     document.getElementById('addEmployeeBtn').addEventListener('click', () => openEmployeeModal(null));
     document.getElementById('employeeForm').addEventListener('submit', onSubmitEmployee);
 
-    refreshListBtn.addEventListener('click', () => { clearMessages(); loadEmployees(); loadStats(); });
+    refreshListBtn.addEventListener('click', onRefreshClick);
     exportExcelBtn.addEventListener('click', onExportExcelClick);
-    filterBusinessUnitInput.addEventListener('change', applyFilters);
     filterStatusInput.addEventListener('change', applyFilters);
+    filterPortalLinkedInput.addEventListener('change', applyFilters);
+    searchEmployeeInput.addEventListener('input', applyFilters);
+    wireMultiSelectFilter(filterDepartmentList, filterSelection.departments);
+    wireMultiSelectFilter(filterBusinessUnitList, filterSelection.businessUnits);
+    document.querySelectorAll('.btn-link-clear[data-clear-target]').forEach(btn => {
+        btn.addEventListener('click', () => onClearMultiSelectFilter(btn.dataset.clearTarget));
+    });
+    clearAllFiltersBtn.addEventListener('click', clearAllFilters);
+    initFilterDropdowns();
     toggleUploadBtn.addEventListener('click', () => setUploadPanelOpen(uploadPanel.classList.contains('hidden')));
     document.getElementById('downloadTemplateBtn').addEventListener('click', onDownloadTemplateClick);
     backToListBtn.addEventListener('click', () => setUploadPanelOpen(false));
@@ -401,10 +424,105 @@ function populateFixedSelects() {
     fillSelect('departmentInput', lookups.departments, 'dept_id', 'department');
     fillSelect('businessUnitInput', lookups.businessUnits, 'bu_id', 'business_unit');
 
-    const currentBuFilter = filterBusinessUnitInput.value;
-    filterBusinessUnitInput.innerHTML = '<option value="">All business units</option>' +
-        lookups.businessUnits.map(b => `<option value="${b.bu_id}">${escapeHtml(b.business_unit)}</option>`).join('');
-    filterBusinessUnitInput.value = currentBuFilter; // keep selection if it still exists
+    renderMultiSelectList(filterDepartmentList, lookups.departments, 'dept_id', 'department', 'dept', filterSelection.departments);
+    renderMultiSelectList(filterBusinessUnitList, lookups.businessUnits, 'bu_id', 'business_unit', 'bu', filterSelection.businessUnits);
+    updateMultiSelectButtonLabel(filterDepartmentBtn, 'Department', filterSelection.departments);
+    updateMultiSelectButtonLabel(filterBusinessUnitBtn, 'Business unit', filterSelection.businessUnits);
+}
+
+// ---------------------------------------------------------------------
+// Checkbox multi-select filter dropdowns (Department / Business unit)
+// ---------------------------------------------------------------------
+
+// Builds the checkbox list inside a filter dropdown menu, keeping any
+// selections that are still valid (e.g. after loadLookups() re-fetches
+// because an upload created a new department/business unit).
+function renderMultiSelectList(listEl, rows, valueKey, labelKey, idPrefix, selectedSet) {
+    // Drop selections that no longer exist among the fetched rows.
+    const validValues = new Set(rows.map(r => String(r[valueKey])));
+    Array.from(selectedSet).forEach(v => { if (!validValues.has(v)) selectedSet.delete(v); });
+
+    if (rows.length === 0) {
+        listEl.innerHTML = '<div class="filter-multiselect-empty">None yet</div>';
+        return;
+    }
+
+    listEl.innerHTML = rows.map(r => {
+        const value = String(r[valueKey]);
+        const id = `filterOpt_${idPrefix}_${value}`;
+        const checked = selectedSet.has(value) ? 'checked' : '';
+        return `
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" value="${escapeHtml(value)}" id="${id}" ${checked}>
+                <label class="form-check-label" for="${id}">${escapeHtml(r[labelKey])}</label>
+            </div>`;
+    }).join('');
+}
+
+// Delegated listener: any checkbox toggled inside the list updates the
+// backing Set and re-applies filters immediately (menu stays open thanks
+// to data-bs-auto-close="outside" on the dropdown toggle button).
+function wireMultiSelectFilter(listEl, selectedSet) {
+    listEl.addEventListener('change', (e) => {
+        const cb = e.target;
+        if (cb.type !== 'checkbox') return;
+        if (cb.checked) selectedSet.add(cb.value);
+        else selectedSet.delete(cb.value);
+
+        const btn = listEl.closest('.dropdown').querySelector('.dropdown-toggle');
+        const label = btn === filterDepartmentBtn ? 'Department' : 'Business unit';
+        updateMultiSelectButtonLabel(btn, label, selectedSet);
+        applyFilters();
+    });
+}
+
+function onClearMultiSelectFilter(target) {
+    const map = {
+        department: { set: filterSelection.departments, list: filterDepartmentList, btn: filterDepartmentBtn, label: 'Department' },
+        businessUnit: { set: filterSelection.businessUnits, list: filterBusinessUnitList, btn: filterBusinessUnitBtn, label: 'Business unit' }
+    };
+    const entry = map[target];
+    if (!entry) return;
+    entry.set.clear();
+    entry.list.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+    updateMultiSelectButtonLabel(entry.btn, entry.label, entry.set);
+    applyFilters();
+}
+
+function updateMultiSelectButtonLabel(btn, label, selectedSet) {
+    btn.textContent = selectedSet.size > 0 ? `${label} (${selectedSet.size})` : label;
+    btn.classList.toggle('active-filter', selectedSet.size > 0);
+}
+
+// The Department / Business unit menus live inside #viewListContainer,
+// a .room-manage-card with `overflow: hidden` (so the table's rounded
+// corners and scroll area stay clean). Bootstrap's default Popper
+// strategy ("absolute") positions the menu relative to that card, so
+// once the table gets short — e.g. after filtering down to a couple of
+// rows — the card shrinks to fit it and clips the open menu.
+// Switching Popper to strategy "fixed" positions the menu relative to
+// the viewport instead, so it floats above the card and is never
+// clipped by the table's height. Instances are created once, up front,
+// so Bootstrap's own click handling for data-bs-toggle="dropdown" reuses
+// these (already-configured) instances rather than creating default ones.
+function initFilterDropdowns() {
+    const fixedPopperConfig = (defaultConfig) => ({ ...defaultConfig, strategy: 'fixed' });
+    new bootstrap.Dropdown(filterDepartmentBtn, { popperConfig: fixedPopperConfig });
+    new bootstrap.Dropdown(filterBusinessUnitBtn, { popperConfig: fixedPopperConfig });
+}
+
+// Resets every filter control (department, business unit, status,
+// portal-linked) in one go. Search keeps its own box and isn't touched.
+function clearAllFilters() {
+    filterSelection.departments.clear();
+    filterSelection.businessUnits.clear();
+    filterDepartmentList.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+    filterBusinessUnitList.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+    updateMultiSelectButtonLabel(filterDepartmentBtn, 'Department', filterSelection.departments);
+    updateMultiSelectButtonLabel(filterBusinessUnitBtn, 'Business unit', filterSelection.businessUnits);
+    filterStatusInput.value = '';
+    filterPortalLinkedInput.checked = false;
+    applyFilters();
 }
 
 // ---------------------------------------------------------------------
@@ -488,6 +606,25 @@ function initSupervisorSearch(excludeId, selectedEmp) {
 // ---------------------------------------------------------------------
 // Stat cards
 // ---------------------------------------------------------------------
+
+// Spins the Refresh button's icon and disables it for the duration of
+// the reload, so it's clear something is happening even though
+// loadEmployees()/loadStats() usually resolve quickly.
+async function onRefreshClick() {
+    if (refreshListBtn.disabled) return; // already refreshing
+    clearMessages();
+    refreshListBtn.disabled = true;
+    refreshListBtn.classList.add('is-refreshing');
+    refreshListBtnLabel.textContent = 'Refreshing…';
+    try {
+        await Promise.all([loadEmployees(), loadStats()]);
+    } finally {
+        refreshListBtn.classList.remove('is-refreshing');
+        refreshListBtnLabel.textContent = 'Refresh';
+        refreshListBtn.disabled = false;
+    }
+}
+
 async function loadStats() {
     const { data, error } = await sb.rpc('admin_get_employee_stats');
     if (error) {
@@ -536,20 +673,48 @@ function isEmployeeActive(emp) {
 }
 
 function applyFilters() {
-    const buFilter = filterBusinessUnitInput.value;
+    const deptFilter = filterSelection.departments; // Set of dept_id strings, empty = all
+    const buFilter = filterSelection.businessUnits; // Set of bu_id strings, empty = all
     const statusFilter = filterStatusInput.value; // '', 'active', 'inactive'
+    const portalLinkedOnly = filterPortalLinkedInput.checked;
+    const searchTerm = searchEmployeeInput.value.trim().toLowerCase();
 
     const filtered = currentEmployees.filter(emp => {
-        if (buFilter && String(emp.bu_id) !== buFilter) return false;
+        if (deptFilter.size > 0 && !deptFilter.has(String(emp.dept_id))) return false;
+        if (buFilter.size > 0 && !buFilter.has(String(emp.bu_id))) return false;
         if (statusFilter) {
             const isActive = isEmployeeActive(emp);
             if (statusFilter === 'active' && !isActive) return false;
             if (statusFilter === 'inactive' && isActive) return false;
         }
+        if (portalLinkedOnly && !emp.auth_user_id) return false;
+        if (searchTerm) {
+            const haystack = [emp.name, emp.employee_id, emp.position_info?.position]
+                .filter(Boolean)
+                .join(' ')
+                .toLowerCase();
+            if (!haystack.includes(searchTerm)) return false;
+        }
         return true;
     });
 
+    updateActiveFilterBadge();
     renderTable(filtered, currentEmployees.length);
+}
+
+// Reflects how many of the *collapsed* filters (department, business unit,
+// status, portal-linked) are currently active, so it's still obvious
+// something's filtering the list even while that panel is tucked away.
+// Search has its own always-visible box, so it isn't counted here.
+function updateActiveFilterBadge() {
+    let count = 0;
+    if (filterSelection.departments.size > 0) count++;
+    if (filterSelection.businessUnits.size > 0) count++;
+    if (filterStatusInput.value) count++;
+    if (filterPortalLinkedInput.checked) count++;
+    activeFilterCount.textContent = String(count);
+    activeFilterCount.classList.toggle('d-none', count === 0);
+    clearAllFiltersBtn.disabled = count === 0;
 }
 
 function renderTable(employees, totalCount) {
