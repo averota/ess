@@ -123,6 +123,14 @@ function formatDateLong(date) {
     return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+function getSupervisorName(emp) {
+    if (!emp.supervisor_info) return '';
+    if (Array.isArray(emp.supervisor_info)) {
+        return emp.supervisor_info[0]?.name || '';
+    }
+    return emp.supervisor_info.name || '';
+}
+
 function ensureToastStack() {
     let stack = document.querySelector('.toast-stack');
     if (!stack) {
@@ -279,6 +287,7 @@ const toggleUploadBtn = document.getElementById('toggleUploadBtn');
 const backToListBtn = document.getElementById('backToListBtn');
 const uploadPanel = document.getElementById('uploadPanel');
 const statsGrid = document.getElementById('statsGrid');
+const metaBar = document.getElementById('metaBar');
 const filePicker = document.getElementById('filePicker');
 const fileInput = document.getElementById('fileInput');
 const tableContainer = document.getElementById('tableContainer');
@@ -300,6 +309,8 @@ const viewListHeader = document.getElementById('viewListHeader');
 const viewListBody = document.getElementById('viewListBody');
 const filterBusinessUnitInput = document.getElementById('filterBusinessUnitInput');
 const filterStatusInput = document.getElementById('filterStatusInput');
+const supervisorSearchInput = document.getElementById('supervisorSearchInput');
+const supervisorMenu = document.getElementById('supervisorMenu');
 let displayedEmployees = []; // currently rendered rows (after filters), used by Export Excel
 
 window.addEventListener('ess:ready', onEssReady);
@@ -324,6 +335,7 @@ async function init() {
     await loadLookups();
     populateFixedSelects();
     wireEvents();
+    wireSupervisorSearch();
 
     await Promise.all([loadStats(), loadEmployees()]);
 }
@@ -337,6 +349,7 @@ function wireEvents() {
     filterBusinessUnitInput.addEventListener('change', applyFilters);
     filterStatusInput.addEventListener('change', applyFilters);
     toggleUploadBtn.addEventListener('click', () => setUploadPanelOpen(uploadPanel.classList.contains('hidden')));
+    document.getElementById('downloadTemplateBtn').addEventListener('click', onDownloadTemplateClick);
     backToListBtn.addEventListener('click', () => setUploadPanelOpen(false));
     fileInput.addEventListener('change', onFileSelected);
     clearBtn.addEventListener('click', resetUploadPreview);
@@ -348,6 +361,7 @@ function setUploadPanelOpen(open) {
     uploadPanel.classList.toggle('hidden', !open);
     viewListContainer.classList.toggle('hidden', open);
     statsGrid.classList.toggle('hidden', open);
+    metaBar.classList.toggle('hidden', open);
     if (open) {
         resetUploadPreview();
     }
@@ -393,13 +407,82 @@ function populateFixedSelects() {
     filterBusinessUnitInput.value = currentBuFilter; // keep selection if it still exists
 }
 
-function populateSupervisorSelect(excludeId) {
-    const el = document.getElementById('supervisorInput');
-    const options = currentEmployees
-        .filter(emp => emp.id !== excludeId)
-        .map(emp => `<option value="${emp.id}">${escapeHtml(emp.name)} (${escapeHtml(emp.employee_id)})</option>`)
-        .join('');
-    el.innerHTML = `<option value="">— None —</option>${options}`;
+// ---------------------------------------------------------------------
+// Supervisor search-select — a search input + filtered dropdown list,
+// standing in for a plain <select> now that the employee list can be
+// too long to scan. The hidden #supervisorInput still holds the chosen
+// employee's id, so onSubmitEmployee() didn't need to change.
+// ---------------------------------------------------------------------
+let supervisorSearchExcludeId = null;
+
+function setSupervisorSelection(emp) {
+    document.getElementById('supervisorInput').value = emp ? emp.id : '';
+    supervisorSearchInput.value = emp ? `${emp.name} (${emp.employee_id})` : '';
+}
+
+function closeSupervisorMenu() {
+    supervisorMenu.classList.add('d-none');
+}
+
+function renderSupervisorMenu(filterText) {
+    const term = filterText.trim().toLowerCase();
+    const matches = currentEmployees
+        .filter(emp => String(emp.id) !== String(supervisorSearchExcludeId))
+        .filter(emp => !term || emp.name.toLowerCase().includes(term) || String(emp.employee_id).toLowerCase().includes(term))
+        .slice(0, 50); // cap so a large org doesn't render an enormous list
+
+    let html = `<button type="button" class="list-group-item list-group-item-action fst-italic small py-1 px-2" data-supervisor-id="">— None —</button>`;
+    if (matches.length > 0) {
+        html += matches.map(emp =>
+            `<button type="button" class="list-group-item list-group-item-action small py-1 px-2" data-supervisor-id="${emp.id}">${escapeHtml(emp.name)} <span class="text-muted">(${escapeHtml(emp.employee_id)})</span></button>`
+        ).join('');
+    } else if (term) {
+        html += `<div class="list-group-item text-muted small py-1 px-2">No matches for "${escapeHtml(filterText.trim())}"</div>`;
+    }
+    supervisorMenu.innerHTML = html;
+    supervisorMenu.classList.remove('d-none');
+}
+
+// Called once from wireEvents() to attach the listeners; initSupervisorSearch()
+// (below) is what re-primes it each time the modal opens.
+function wireSupervisorSearch() {
+    supervisorSearchInput.addEventListener('focus', () => renderSupervisorMenu(supervisorSearchInput.value));
+    supervisorSearchInput.addEventListener('input', () => renderSupervisorMenu(supervisorSearchInput.value));
+    supervisorSearchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeSupervisorMenu();
+    });
+    supervisorMenu.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-supervisor-id]');
+        if (!btn) return;
+        const id = btn.getAttribute('data-supervisor-id');
+        const emp = id ? currentEmployees.find(x => String(x.id) === id) : null;
+        setSupervisorSelection(emp);
+        closeSupervisorMenu();
+    });
+    // Typed text that was never picked from the list shouldn't silently
+    // keep whatever supervisor was previously selected (or send free text
+    // as if it were a valid id) — reconcile on blur. The short delay lets
+    // a click on a menu item (which blurs the input first) register.
+    supervisorSearchInput.addEventListener('blur', () => {
+        setTimeout(() => {
+            const hiddenId = document.getElementById('supervisorInput').value;
+            const selectedEmp = hiddenId ? currentEmployees.find(x => String(x.id) === hiddenId) : null;
+            const expectedText = selectedEmp ? `${selectedEmp.name} (${selectedEmp.employee_id})` : '';
+            if (supervisorSearchInput.value.trim() !== expectedText) {
+                setSupervisorSelection(null);
+            }
+            closeSupervisorMenu();
+        }, 150);
+    });
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('#supervisorSelectWrap')) closeSupervisorMenu();
+    });
+}
+
+function initSupervisorSearch(excludeId, selectedEmp) {
+    supervisorSearchExcludeId = excludeId;
+    setSupervisorSelection(selectedEmp || null);
+    closeSupervisorMenu();
 }
 
 // ---------------------------------------------------------------------
@@ -434,7 +517,7 @@ async function loadEmployees() {
             department_info:departments!dept_id(department),
             business_unit_info:business_units!bu_id(business_unit),
             role_info:roles(role_name),
-            supervisor_info:employees!supervisor_id(name)
+            supervisor_info:supervisor_id(name)
         `)
         .order('employee_id', { ascending: true });
 
@@ -494,6 +577,7 @@ function renderTable(employees, totalCount) {
 
     employees.forEach((emp, i) => {
         const isActive = isEmployeeActive(emp);
+        const supervisorName = getSupervisorName(emp);
         const tr = document.createElement('tr');
 
         const idxTd = document.createElement('td');
@@ -507,7 +591,7 @@ function renderTable(employees, totalCount) {
             escapeHtml(emp.position_info?.position || '—'),
             escapeHtml(emp.department_info?.department || '—'),
             escapeHtml(emp.business_unit_info?.business_unit || '—'),
-            escapeHtml(emp.supervisor_info?.name || '—'),
+            escapeHtml(supervisorName || '—'),
             escapeHtml(formatDateLong(parseDateOnly(emp.hired_date))),
             isActive
                 ? '<span class="status-badge is-active">Active</span>'
@@ -528,9 +612,22 @@ function renderTable(employees, totalCount) {
         const editBtn = document.createElement('button');
         editBtn.type = 'button';
         editBtn.className = 'btn-icon-only';
-        editBtn.title = 'Edit this employee';
         editBtn.innerHTML = editIconSvg();
-        editBtn.addEventListener('click', () => openEmployeeModal(emp));
+        if (isActive) {
+            editBtn.title = 'Edit this employee';
+            editBtn.addEventListener('click', () => openEmployeeModal(emp));
+        } else {
+            // Not using the native `disabled` attribute here: some browsers
+            // (notably Firefox) suppress the title tooltip on disabled
+            // buttons. No click listener is attached in this branch, so the
+            // button is already inert — this just makes it look and act
+            // (cursor-wise) unclickable while the tooltip keeps working.
+            editBtn.title = 'Inactive employees can\'t be edited — reactivate first';
+            editBtn.setAttribute('aria-disabled', 'true');
+            editBtn.classList.add('is-disabled');
+            editBtn.style.opacity = '0.4';
+            editBtn.style.cursor = 'not-allowed';
+        }
         wrap.appendChild(editBtn);
 
         if (isActive) {
@@ -560,6 +657,18 @@ function renderTable(employees, totalCount) {
     viewListBody.replaceChildren(fragment);
 }
 
+// Blank bulk-upload template: just the header row the parser in
+// processRows() expects (see SCHEMA_FIELDS / HEADER_LABELS above), so
+// admins have a starting point that matches what "Upload Excel/CSV" and
+// admin_append_employees / admin_overwrite_employees actually require.
+function onDownloadTemplateClick() {
+    const headers = Object.keys(SCHEMA_FIELDS).map(f => HEADER_LABELS[f] || f);
+    const worksheet = XLSX.utils.aoa_to_sheet([headers]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Employees');
+    XLSX.writeFile(workbook, 'employees_upload_template.xlsx');
+}
+
 function onExportExcelClick() {
     if (displayedEmployees.length === 0) {
         showToast('No employees to export.', 'danger');
@@ -573,7 +682,7 @@ function onExportExcelClick() {
         'Position': emp.position_info?.position || '',
         'Department': emp.department_info?.department || '',
         'Business unit': emp.business_unit_info?.business_unit || '',
-        'Supervisor': emp.supervisor_info?.name || '',
+        'Supervisor': getSupervisorName(emp),
         'Role': capitalize(emp.role_info?.role_name || ''),
         'Hired date': emp.hired_date || '',
         'Probation end date': emp.probation_end_date || '',
@@ -592,6 +701,8 @@ function onExportExcelClick() {
 // Add / edit (single-record form)
 // ---------------------------------------------------------------------
 function openEmployeeModal(emp) {
+    if (emp && !isEmployeeActive(emp)) return; // safety net — inactive employees are edit-locked in the UI
+
     editingEmployeeId = emp ? emp.id : null;
     document.getElementById('employeeModalTitle').textContent = emp ? 'Edit employee' : 'Add employee';
     document.getElementById('employeeIdInput').value = emp ? emp.employee_id : '';
@@ -604,8 +715,10 @@ function openEmployeeModal(emp) {
     document.getElementById('departmentInput').value = emp ? emp.dept_id : (lookups.departments[0]?.dept_id ?? '');
     document.getElementById('businessUnitInput').value = emp ? emp.bu_id : (lookups.businessUnits[0]?.bu_id ?? '');
 
-    populateSupervisorSelect(emp ? emp.id : null);
-    document.getElementById('supervisorInput').value = emp && emp.supervisor_id ? emp.supervisor_id : '';
+    const currentSupervisor = (emp && emp.supervisor_id)
+        ? currentEmployees.find(x => String(x.id) === String(emp.supervisor_id))
+        : null;
+    initSupervisorSearch(emp ? emp.id : null, currentSupervisor);
 
     document.getElementById('hiredDateInput').value = emp ? emp.hired_date : '';
     document.getElementById('probationEndDateInput').value = emp ? (emp.probation_end_date || '') : '';
@@ -616,15 +729,30 @@ function openEmployeeModal(emp) {
     employeeModal.show();
 }
 
+// Front-end uniqueness check against the in-memory employee list, mirroring
+// the database's `employees_employee_id_key` unique constraint (exact,
+// case-sensitive match). Excludes the record being edited so saving an
+// employee without changing their own ID doesn't flag itself as a dupe.
+function isEmployeeIdTaken(employeeId, excludeId) {
+    return currentEmployees.some(emp =>
+        emp.employee_id === employeeId && String(emp.id) !== String(excludeId)
+    );
+}
+
 async function onSubmitEmployee(e) {
     e.preventDefault();
 
+    const employeeId = document.getElementById('employeeIdInput').value.trim();
     const name = document.getElementById('nameInput').value.trim();
     const hiredDate = document.getElementById('hiredDateInput').value;
     const probationEndDate = document.getElementById('probationEndDateInput').value || null;
 
-    if (!name || !hiredDate) {
+    if (!employeeId || !name || !hiredDate) {
         showToast('Please fill in the required fields.', 'danger');
+        return;
+    }
+    if (isEmployeeIdTaken(employeeId, editingEmployeeId)) {
+        showToast(`Employee ID "${employeeId}" is already in use — please choose a different one.`, 'danger');
         return;
     }
     if (editingEmployeeId && !probationEndDate) {
@@ -633,6 +761,7 @@ async function onSubmitEmployee(e) {
     }
 
     const payload = {
+        employee_id: employeeId,
         name,
         gender: Number(document.getElementById('genderInput').value),
         role: Number(document.getElementById('roleInput').value),
@@ -659,7 +788,11 @@ async function onSubmitEmployee(e) {
     submitBtn.disabled = false;
 
     if (error) {
-        showToast('Could not save employee: ' + error.message, 'danger');
+        if (error.code === '23505' && /employee_id/.test(error.message)) {
+            showToast(`Employee ID "${employeeId}" is already in use — please choose a different one.`, 'danger');
+        } else {
+            showToast('Could not save employee: ' + error.message, 'danger');
+        }
         return;
     }
 
@@ -790,12 +923,6 @@ function processRows(jsonRows) {
         else invalidCount++;
     });
 
-    // Dedupe within the file: two rows can't share the same Employee ID,
-    // and (separately) two rows can't share the same Email — checked
-    // independently so a duplicate email with a different Employee ID is
-    // still caught. Case-insensitive, since "EMP001" and "emp001" are the
-    // same ID to a person even though the database compares exact text.
-    // Rows with neither value can't collide this way and are always kept.
     const seenEmployeeIds = new Set();
     const seenEmails = new Set();
     const validRows = [];
@@ -813,10 +940,6 @@ function processRows(jsonRows) {
         }
     });
 
-    // Informational only: how many of the valid rows already exist in the
-    // database by Employee ID or Email. These stay in validRows since
-    // "Overwrite" clears the table first (so they're not conflicts there);
-    // "Append" already skips them safely server-side via a unique-key check.
     const existingIds = new Set();
     const existingEmails = new Set();
     currentEmployees.forEach(emp => {
@@ -896,9 +1019,6 @@ function renderSummary(ds) {
     `;
 }
 
-// Renders headerEl/bodyEl atomically via DocumentFragment. `actions` is
-// { onEdit, onDelete } — used for the upload preview only, since those
-// rows aren't saved yet and can still be corrected before Append/Overwrite.
 function renderPreviewRows(headerEl, bodyEl, fields, rows, cap = 1000, capNote = true, actions = null) {
     const hasActions = !!(actions && (actions.onEdit || actions.onDelete));
     const colCount = fields.length + 1 + (hasActions ? 1 : 0);

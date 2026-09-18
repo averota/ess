@@ -331,9 +331,19 @@ a:hover { color: var(--accent-dark); }
 /* Right-side sidebar: width animates open/closed so content is pushed,
    never covered. Inner content keeps a fixed width so it doesn't reflow
    mid-transition — the parent's overflow:hidden just clips it while
-   collapsed. */
+   collapsed.
+   height: 100vh + position: sticky (instead of stretching to match
+   .app-main via the flex parent's align-items: stretch) keeps the
+   sidebar pinned to exactly the viewport height on every page,
+   regardless of how tall that page's content is — it no longer grows
+   past 100vh on long pages (e.g. a big employee table) or gets
+   stretched short on brief ones. */
 .app-sidebar {
   order: -1; /* visually left, regardless of DOM/markup order */
+  position: sticky;
+  top: 0;
+  align-self: flex-start; /* don't let .app-shell's align-items: stretch override height: 100vh */
+  height: 100vh;
   width: 0;
   flex-shrink: 0;
   overflow: hidden;
@@ -349,7 +359,6 @@ a:hover { color: var(--accent-dark); }
 .sidebar-inner {
   width: 260px;
   height: 100%;
-  min-height: 100vh;
   display: flex;
   flex-direction: column;
   padding: 20px 16px;
@@ -399,6 +408,7 @@ a:hover { color: var(--accent-dark); }
   margin-bottom: 10px;
 }
 .sidebar-user-name {
+  text-align: center;
   font-weight: 600;
   font-size: 0.92rem;
   color: var(--ink);
@@ -407,6 +417,7 @@ a:hover { color: var(--accent-dark); }
   text-overflow: ellipsis;
 }
 .sidebar-user-role {
+  text-align: center;
   font-size: 0.78rem;
   color: var(--ink-faint);
   text-transform: uppercase;
@@ -466,7 +477,7 @@ a:hover { color: var(--accent-dark); }
 
 .hidden { display: none !important; }
 
-.room-meta-bar {
+.meta-bar {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -474,11 +485,11 @@ a:hover { color: var(--accent-dark); }
   flex-wrap: wrap;
   margin-bottom: 20px;
 }
-.room-meta-bar h2 {
+.meta-bar h2 {
   font-size: 1.4rem;
   margin: 0 0 4px;
 }
-.room-meta-bar .meta {
+.meta-bar .meta {
   color: var(--ink-soft);
   font-size: 0.88rem;
   margin: 0;
