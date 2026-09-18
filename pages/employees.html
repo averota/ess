@@ -303,17 +303,44 @@
             </div>
 
             <div class="col-md-6">
-              <label class="form-label">Position</label>
-              <select class="form-select" id="positionInput" required></select>
+              <label class="form-label label-with-action">
+                <span>Position</span>
+                <button type="button" class="btn-icon-only label-action-btn" data-lookup-kind="position" title="Add/edit positions">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                </button>
+              </label>
+              <div class="position-relative" id="positionSelectWrap">
+                <input type="text" class="form-control" id="positionSearchInput" placeholder="Search position…" autocomplete="off">
+                <input type="hidden" id="positionInput">
+                <div class="list-group position-absolute start-0 top-100 mt-1 w-100 shadow-sm d-none" id="positionMenu" style="z-index: 1060; max-height: 220px; overflow-y: auto;"></div>
+              </div>
             </div>
             <div class="col-md-6">
-              <label class="form-label">Department</label>
-              <select class="form-select" id="departmentInput" required></select>
+              <label class="form-label label-with-action">
+                <span>Department</span>
+                <button type="button" class="btn-icon-only label-action-btn" data-lookup-kind="department" title="Add/edit departments">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                </button>
+              </label>
+              <div class="position-relative" id="departmentSelectWrap">
+                <input type="text" class="form-control" id="departmentSearchInput" placeholder="Search department…" autocomplete="off">
+                <input type="hidden" id="departmentInput">
+                <div class="list-group position-absolute start-0 top-100 mt-1 w-100 shadow-sm d-none" id="departmentMenu" style="z-index: 1060; max-height: 220px; overflow-y: auto;"></div>
+              </div>
             </div>
 
             <div class="col-md-6">
-              <label class="form-label">Business unit</label>
-              <select class="form-select" id="businessUnitInput" required></select>
+              <label class="form-label label-with-action">
+                <span>Business unit</span>
+                <button type="button" class="btn-icon-only label-action-btn" data-lookup-kind="business_unit" title="Add/edit business units">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                </button>
+              </label>
+              <div class="position-relative" id="businessUnitSelectWrap">
+                <input type="text" class="form-control" id="businessUnitSearchInput" placeholder="Search business unit…" autocomplete="off">
+                <input type="hidden" id="businessUnitInput">
+                <div class="list-group position-absolute start-0 top-100 mt-1 w-100 shadow-sm d-none" id="businessUnitMenu" style="z-index: 1060; max-height: 220px; overflow-y: auto;"></div>
+              </div>
             </div>
             <div class="col-md-6">
               <label class="form-label">Report to <span class="text-muted fw-normal">(optional)</span></label>
@@ -348,6 +375,72 @@
           <button type="submit" class="btn btn-sm btn-accent" id="employeeSubmitBtn">Save employee</button>
         </div>
       </form>
+    </div>
+  </div>
+</div>
+
+<!-- Manage Position / Department / Business unit lists. Opened from the
+     small icon buttons next to those fields in #employeeModal above;
+     openLookupManager() in employees.js switches to the matching tab. -->
+<div class="modal fade" id="lookupModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Manage job structure</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <ul class="nav nav-tabs" id="lookupModalTabs" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="lookupTab-position" data-bs-toggle="tab" data-bs-target="#lookupPane-position" type="button" role="tab">Positions</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="lookupTab-department" data-bs-toggle="tab" data-bs-target="#lookupPane-department" type="button" role="tab">Departments</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="lookupTab-business_unit" data-bs-toggle="tab" data-bs-target="#lookupPane-business_unit" type="button" role="tab">Business units</button>
+          </li>
+        </ul>
+        <div class="tab-content" id="lookupModalTabContent">
+
+          <div class="tab-pane fade show active" id="lookupPane-position" role="tabpanel">
+            <form class="lookup-manage-form" data-lookup-kind="position">
+              <input type="hidden" data-role="editing-id" value="">
+              <div class="input-group input-group-sm mt-3">
+                <input type="text" class="form-control" data-role="value-input" placeholder="e.g. Software Engineer" required>
+                <button type="submit" class="btn btn-accent btn-sm" data-role="submit-btn">Add</button>
+                <button type="button" class="btn btn-outline-secondary btn-sm d-none" data-role="cancel-btn">Cancel</button>
+              </div>
+            </form>
+            <div class="lookup-manage-list mt-3" id="lookupList-position"></div>
+          </div>
+
+          <div class="tab-pane fade" id="lookupPane-department" role="tabpanel">
+            <form class="lookup-manage-form" data-lookup-kind="department">
+              <input type="hidden" data-role="editing-id" value="">
+              <div class="input-group input-group-sm mt-3">
+                <input type="text" class="form-control" data-role="value-input" placeholder="e.g. Human Resources" required>
+                <button type="submit" class="btn btn-accent btn-sm" data-role="submit-btn">Add</button>
+                <button type="button" class="btn btn-outline-secondary btn-sm d-none" data-role="cancel-btn">Cancel</button>
+              </div>
+            </form>
+            <div class="lookup-manage-list mt-3" id="lookupList-department"></div>
+          </div>
+
+          <div class="tab-pane fade" id="lookupPane-business_unit" role="tabpanel">
+            <form class="lookup-manage-form" data-lookup-kind="business_unit">
+              <input type="hidden" data-role="editing-id" value="">
+              <div class="input-group input-group-sm mt-3">
+                <input type="text" class="form-control" data-role="value-input" placeholder="e.g. Headquarters" required>
+                <button type="submit" class="btn btn-accent btn-sm" data-role="submit-btn">Add</button>
+                <button type="button" class="btn btn-outline-secondary btn-sm d-none" data-role="cancel-btn">Cancel</button>
+              </div>
+            </form>
+            <div class="lookup-manage-list mt-3" id="lookupList-business_unit"></div>
+          </div>
+
+        </div>
+      </div>
     </div>
   </div>
 </div>

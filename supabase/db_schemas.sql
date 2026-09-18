@@ -93,9 +93,14 @@ on conflict (gender_id) do nothing;
 create table if not exists public.positions (
     post_id             serial primary key,
     position            text not null unique,
+    is_active           boolean not null default true, -- false = hidden from the employee-form dropdown, but not from existing records or bulk upload (see manage-list-values UI in employees.js)
     modified_by         uuid,
     last_modified       timestamptz not null default now()
 );
+-- Adding is_active to a database that already ran an earlier version of
+-- this script? CREATE TABLE IF NOT EXISTS is a no-op there — use
+-- 03_add_lookup_active_flag.sql instead.
+alter table public.positions add column if not exists is_active boolean not null default true;
 
 insert into public.positions (position) values
     ('Software Engineer'),
@@ -108,9 +113,11 @@ on conflict (position) do nothing;
 create table if not exists public.departments (
     dept_id             serial primary key,
     department          text not null unique,
+    is_active           boolean not null default true,
     modified_by         uuid,
     last_modified       timestamptz not null default now()
 );
+alter table public.departments add column if not exists is_active boolean not null default true;
 
 insert into public.departments (department) values
     ('Information Technology'),
@@ -123,9 +130,11 @@ on conflict (department) do nothing;
 create table if not exists public.business_units (
     bu_id               serial primary key,
     business_unit       text not null unique,
+    is_active           boolean not null default true,
     modified_by         uuid,
     last_modified       timestamptz not null default now()
 );
+alter table public.business_units add column if not exists is_active boolean not null default true;
 
 insert into public.business_units (business_unit) values
     ('Headquarters'),
@@ -186,6 +195,9 @@ create index if not exists idx_employees_supervisor_id on public.employees (supe
 create index if not exists idx_positions_modified_by on public.positions (modified_by);
 create index if not exists idx_departments_modified_by on public.departments (modified_by);
 create index if not exists idx_business_units_modified_by on public.business_units (modified_by);
+create index if not exists idx_positions_is_active      on public.positions (is_active);
+create index if not exists idx_departments_is_active    on public.departments (is_active);
+create index if not exists idx_business_units_is_active on public.business_units (is_active);
 create index if not exists idx_employees_modified_by on public.employees (modified_by);
 
 -- Auto-generate employee_id (EMP0001, EMP0002, ...) when not supplied.
@@ -511,6 +523,18 @@ to authenticated, service_role;
 -- it runs with the calling (authenticated) role's own privileges and
 -- needs USAGE on the sequence directly.
 grant usage, select on public.employee_id_seq to authenticated, service_role;
+
+-- Same reason: the lookup manager (employees.js) now inserts into
+-- positions/departments/business_units directly from the client instead
+-- of only through the SECURITY DEFINER bulk-upload functions, so each
+-- serial column's backing sequence needs USAGE granted explicitly too —
+-- "alter default privileges" below only covers sequences created after
+-- that statement runs, not these three, which already existed.
+grant usage, select on
+    public.positions_post_id_seq,
+    public.departments_dept_id_seq,
+    public.business_units_bu_id_seq
+to authenticated, service_role;
 
 -- Anything created in public from now on automatically inherits the same
 -- grants, so a future ALTER/CREATE TABLE here doesn't silently end up

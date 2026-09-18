@@ -346,11 +346,13 @@ async function onEssReady(e) {
 
 async function init() {
     employeeModal = new bootstrap.Modal(document.getElementById('employeeModal'));
+    initLookupManager();
 
     await loadLookups();
     populateFixedSelects();
     wireEvents();
     wireSupervisorSearch();
+    wireLookupSearchSelects();
 
     await Promise.all([loadStats(), loadEmployees()]);
 }
@@ -399,9 +401,9 @@ async function loadLookups() {
     const [{ data: genders }, { data: roles }, { data: positions }, { data: departments }, { data: businessUnits }] = await Promise.all([
         sb.from('genders').select('gender_id, gender_name').order('gender_id'),
         sb.from('roles').select('role_id, role_name').order('role_id'),
-        sb.from('positions').select('post_id, position').order('position'),
-        sb.from('departments').select('dept_id, department').order('department'),
-        sb.from('business_units').select('bu_id, business_unit').order('business_unit')
+        sb.from('positions').select('post_id, position, is_active').order('position'),
+        sb.from('departments').select('dept_id, department, is_active').order('department'),
+        sb.from('business_units').select('bu_id, business_unit, is_active').order('business_unit')
     ]);
     lookups.genders = genders || [];
     lookups.roles = roles || [];
@@ -417,13 +419,26 @@ function fillSelect(id, rows, valueKey, labelKey, labelFn) {
     ).join('');
 }
 
+// Positions/departments/business units can be disabled from the lookup
+// manager (see the "Lookup manager" section below) — disabled rows are
+// kept (existing employees and bulk upload still reference them fine)
+// but shouldn't be offered when assigning a value to a record, so every
+// selection UI filters through this first.
+function activeLookupRows(rows) {
+    return rows.filter(r => r.is_active !== false);
+}
+
 function populateFixedSelects() {
     fillSelect('genderInput', lookups.genders, 'gender_id', 'gender_name', capitalize);
     fillSelect('roleInput', lookups.roles, 'role_id', 'role_name', capitalize);
-    fillSelect('positionInput', lookups.positions, 'post_id', 'position');
-    fillSelect('departmentInput', lookups.departments, 'dept_id', 'department');
-    fillSelect('businessUnitInput', lookups.businessUnits, 'bu_id', 'business_unit');
+    // Position/Department/Business unit are search-selects now (see the
+    // "Position / Department / Business unit search-selects" section below)
+    // — they read straight from `lookups` each time their menu renders, so
+    // there's no option list here to refresh.
 
+    // Department/Business unit filters intentionally still list disabled
+    // values too, so admins can keep filtering the employee list down to
+    // people already assigned to one after it's disabled.
     renderMultiSelectList(filterDepartmentList, lookups.departments, 'dept_id', 'department', 'dept', filterSelection.departments);
     renderMultiSelectList(filterBusinessUnitList, lookups.businessUnits, 'bu_id', 'business_unit', 'bu', filterSelection.businessUnits);
     updateMultiSelectButtonLabel(filterDepartmentBtn, 'Department', filterSelection.departments);
@@ -526,6 +541,217 @@ function clearAllFilters() {
 }
 
 // ---------------------------------------------------------------------
+// Lookup manager (#lookupModal): add, rename, and enable/disable the
+// three open-ended lists (Position / Department / Business unit) from
+// the small icon buttons next to those fields in #employeeModal.
+//
+// Renaming and disabling both go straight through Supabase from the
+// client (RLS on positions/departments/business_units already restricts
+// writes to admins — see "lookup_write_*" policies in
+// 01_employee_info_schema.sql), the same way genders/roles are read
+// today; no extra RPC layer needed.
+//
+// Disabling only sets is_active = false — it never deletes a row, so it
+// can't affect employees already assigned to it, and it doesn't touch
+// bulk upload either: admin_resolve_core_employee_fields() (used by both
+// Append and Overwrite) matches/creates these rows directly and ignores
+// is_active entirely.
+// ---------------------------------------------------------------------
+let lookupModal;
+// dataKey points at the matching array on `lookups` (populated by
+// loadLookups()); idPrefix matches the *SearchInput/*Input/*Menu/*SelectWrap
+// element ids in #employeeModal for the search-select widgets below.
+const LOOKUP_KINDS = {
+    position:      { table: 'positions',      idKey: 'post_id', nameKey: 'position',      label: 'position',      dataKey: 'positions',     idPrefix: 'position' },
+    department:    { table: 'departments',    idKey: 'dept_id', nameKey: 'department',    label: 'department',    dataKey: 'departments',   idPrefix: 'department' },
+    business_unit: { table: 'business_units', idKey: 'bu_id',   nameKey: 'business_unit',  label: 'business unit', dataKey: 'businessUnits', idPrefix: 'businessUnit' }
+};
+// Full (active + disabled) rows per kind, (re)loaded whenever a tab is shown.
+const lookupManageRows = { position: [], department: [], business_unit: [] };
+
+function initLookupManager() {
+    lookupModal = new bootstrap.Modal(document.getElementById('lookupModal'));
+
+    document.querySelectorAll('.label-action-btn[data-lookup-kind]').forEach(btn => {
+        btn.addEventListener('click', () => openLookupManager(btn.dataset.lookupKind));
+    });
+
+    Object.keys(LOOKUP_KINDS).forEach(kind => {
+        const form = document.querySelector(`.lookup-manage-form[data-lookup-kind="${kind}"]`);
+        form.addEventListener('submit', (e) => onSubmitLookupItem(e, kind));
+        form.querySelector('[data-role="cancel-btn"]').addEventListener('click', () => resetLookupForm(kind));
+        document.getElementById(`lookupTab-${kind}`).addEventListener('shown.bs.tab', () => refreshLookupManageList(kind));
+    });
+
+    // Clear any in-progress edit so reopening the modal later starts fresh.
+    document.getElementById('lookupModal').addEventListener('hidden.bs.modal', () => {
+        Object.keys(LOOKUP_KINDS).forEach(resetLookupForm);
+    });
+}
+
+// Opens the modal already switched to the tab the click came from —
+// e.g. clicking the icon next to "Department" opens straight to Departments.
+function openLookupManager(kind) {
+    bootstrap.Tab.getOrCreateInstance(document.getElementById(`lookupTab-${kind}`)).show();
+    lookupModal.show();
+    refreshLookupManageList(kind);
+}
+
+async function refreshLookupManageList(kind) {
+    const { table, idKey, nameKey } = LOOKUP_KINDS[kind];
+    const listEl = document.getElementById(`lookupList-${kind}`);
+    listEl.innerHTML = '<div class="lookup-manage-empty">Loading…</div>';
+
+    const { data, error } = await sb.from(table).select(`${idKey}, ${nameKey}, is_active`).order(nameKey);
+    if (error) {
+        listEl.innerHTML = `<div class="lookup-manage-empty">Could not load: ${escapeHtml(error.message)}</div>`;
+        return;
+    }
+
+    lookupManageRows[kind] = data || [];
+    renderLookupManageList(kind);
+}
+
+function renderLookupManageList(kind) {
+    const { idKey, nameKey } = LOOKUP_KINDS[kind];
+    const listEl = document.getElementById(`lookupList-${kind}`);
+    const rows = lookupManageRows[kind];
+
+    if (rows.length === 0) {
+        listEl.innerHTML = '<div class="lookup-manage-empty">None yet</div>';
+        return;
+    }
+
+    listEl.innerHTML = rows.map(r => `
+        <div class="lookup-manage-row${r.is_active ? '' : ' is-disabled'}" data-id="${r[idKey]}">
+            <span class="lookup-manage-name">${escapeHtml(r[nameKey])}</span>
+            <span class="status-badge ${r.is_active ? 'is-active' : 'is-terminated'}">${r.is_active ? 'Active' : 'Disabled'}</span>
+            <div class="lookup-manage-row-actions">
+                <button type="button" class="btn-icon-only" data-action="edit" title="Edit">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                </button>
+                <button type="button" class="btn-icon-only" data-action="toggle" title="${r.is_active ? 'Disable' : 'Enable'}">
+                    ${r.is_active
+                        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>'
+                        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg>'}
+                </button>
+            </div>
+        </div>
+    `).join('');
+
+    listEl.querySelectorAll('[data-action="edit"]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const id = btn.closest('.lookup-manage-row').dataset.id;
+            const item = rows.find(r => String(r[idKey]) === String(id));
+            if (item) startEditLookupItem(kind, item);
+        });
+    });
+    listEl.querySelectorAll('[data-action="toggle"]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const id = btn.closest('.lookup-manage-row').dataset.id;
+            const item = rows.find(r => String(r[idKey]) === String(id));
+            if (item) onToggleLookupItem(kind, item);
+        });
+    });
+}
+
+function startEditLookupItem(kind, item) {
+    const { idKey, nameKey } = LOOKUP_KINDS[kind];
+    const form = document.querySelector(`.lookup-manage-form[data-lookup-kind="${kind}"]`);
+    form.querySelector('[data-role="editing-id"]').value = item[idKey];
+    form.querySelector('[data-role="value-input"]').value = item[nameKey];
+    form.querySelector('[data-role="submit-btn"]').textContent = 'Save';
+    form.querySelector('[data-role="cancel-btn"]').classList.remove('d-none');
+    form.querySelector('[data-role="value-input"]').focus();
+}
+
+function resetLookupForm(kind) {
+    const form = document.querySelector(`.lookup-manage-form[data-lookup-kind="${kind}"]`);
+    form.reset();
+    form.querySelector('[data-role="editing-id"]').value = '';
+    form.querySelector('[data-role="submit-btn"]').textContent = 'Add';
+    form.querySelector('[data-role="cancel-btn"]').classList.add('d-none');
+}
+
+async function onSubmitLookupItem(e, kind) {
+    e.preventDefault();
+    const { table, idKey, nameKey, label } = LOOKUP_KINDS[kind];
+    const form = e.target;
+    const editingId = form.querySelector('[data-role="editing-id"]').value || null;
+    const valueInput = form.querySelector('[data-role="value-input"]');
+    const value = valueInput.value.trim();
+
+    if (!value) {
+        showToast(`Please enter a ${label} name.`, 'danger');
+        return;
+    }
+
+    // Trimmed, case-insensitive duplicate check against every row of this
+    // kind, active or disabled — the underlying column is unique either way.
+    const dupe = lookupManageRows[kind].some(r =>
+        String(r[idKey]) !== String(editingId) &&
+        r[nameKey].trim().toLowerCase() === value.toLowerCase()
+    );
+    if (dupe) {
+        showToast(`A ${label} named "${value}" already exists.`, 'danger');
+        return;
+    }
+
+    const submitBtn = form.querySelector('[data-role="submit-btn"]');
+    submitBtn.disabled = true;
+
+    let error;
+    if (editingId) {
+        ({ error } = await sb.from(table).update({ [nameKey]: value }).eq(idKey, editingId));
+    } else {
+        ({ error } = await sb.from(table).insert({ [nameKey]: value }));
+    }
+
+    submitBtn.disabled = false;
+
+    if (error) {
+        if (error.code === '23505') {
+            showToast(`A ${label} named "${value}" already exists.`, 'danger');
+        } else {
+            showToast(`Could not save ${label}: ` + error.message, 'danger');
+        }
+        return;
+    }
+
+    showToast(editingId ? `${capitalize(label)} updated.` : `${capitalize(label)} added.`, 'success');
+    resetLookupForm(kind);
+    await refreshLookupManageList(kind);
+    await loadLookups();
+    populateFixedSelects();
+}
+
+async function onToggleLookupItem(kind, item) {
+    const { table, idKey, nameKey, label } = LOOKUP_KINDS[kind];
+    const nextActive = !item.is_active;
+
+    if (!nextActive) {
+        const ok = await showConfirmDialog({
+            title: `Disable this ${label}?`,
+            message: `<strong>${escapeHtml(item[nameKey])}</strong> will no longer be offered when adding or editing employees. Employees already using it, and bulk uploads, are not affected.`,
+            confirmLabel: 'Disable',
+            danger: true
+        });
+        if (!ok) return;
+    }
+
+    const { error } = await sb.from(table).update({ is_active: nextActive }).eq(idKey, item[idKey]);
+    if (error) {
+        showToast(`Could not update ${label}: ` + error.message, 'danger');
+        return;
+    }
+
+    showToast(nextActive ? `${capitalize(label)} enabled.` : `${capitalize(label)} disabled.`, 'success');
+    await refreshLookupManageList(kind);
+    await loadLookups();
+    populateFixedSelects();
+}
+
+// ---------------------------------------------------------------------
 // Supervisor search-select — a search input + filtered dropdown list,
 // standing in for a plain <select> now that the employee list can be
 // too long to scan. The hidden #supervisorInput still holds the chosen
@@ -601,6 +827,152 @@ function initSupervisorSearch(excludeId, selectedEmp) {
     supervisorSearchExcludeId = excludeId;
     setSupervisorSelection(selectedEmp || null);
     closeSupervisorMenu();
+}
+
+// ---------------------------------------------------------------------
+// Position / Department / Business unit search-selects — same pattern as
+// the supervisor search-select above (a search input + filtered dropdown
+// list, with a hidden input holding the chosen row's id), generalized
+// over LOOKUP_KINDS so it drives all three #employeeModal fields plus
+// whatever kind is added to LOOKUP_KINDS in future. Options are read live
+// from `lookups` on every render, so there's no separate option cache to
+// keep in sync when a position/department/business unit is added, edited,
+// or disabled via the lookup manager.
+// ---------------------------------------------------------------------
+const lookupSelectEls = {}; // kind -> {searchInput, hiddenInput, menu, wrap} (cached on first use)
+// kind -> the currently-assigned row when it's a *disabled* one, kept
+// selectable (with a "(disabled)" suffix) exactly like the old plain
+// <select> did via setLookupSelectValue(), so opening an existing record
+// never forces the admin to pick a replacement value.
+const lookupSelectExtraOption = {};
+
+function getLookupSelectEls(kind) {
+    if (!lookupSelectEls[kind]) {
+        const { idPrefix } = LOOKUP_KINDS[kind];
+        lookupSelectEls[kind] = {
+            searchInput: document.getElementById(`${idPrefix}SearchInput`),
+            hiddenInput: document.getElementById(`${idPrefix}Input`),
+            menu: document.getElementById(`${idPrefix}Menu`),
+            wrap: document.getElementById(`${idPrefix}SelectWrap`)
+        };
+    }
+    return lookupSelectEls[kind];
+}
+
+function lookupRowLabel(kind, row) {
+    const { nameKey } = LOOKUP_KINDS[kind];
+    return row ? `${row[nameKey]}${row.is_active === false ? ' (disabled)' : ''}` : '';
+}
+
+function setLookupSelection(kind, row) {
+    const { idKey } = LOOKUP_KINDS[kind];
+    const { searchInput, hiddenInput } = getLookupSelectEls(kind);
+    hiddenInput.value = row ? row[idKey] : '';
+    searchInput.value = lookupRowLabel(kind, row);
+}
+
+function closeLookupSelectMenu(kind) {
+    getLookupSelectEls(kind).menu.classList.add('d-none');
+}
+
+function renderLookupSelectMenu(kind, filterText) {
+    const { idKey, nameKey, dataKey } = LOOKUP_KINDS[kind];
+    const { menu } = getLookupSelectEls(kind);
+    const term = filterText.trim().toLowerCase();
+
+    let rows = activeLookupRows(lookups[dataKey]);
+    const extra = lookupSelectExtraOption[kind];
+    if (extra && !rows.some(r => String(r[idKey]) === String(extra[idKey]))) {
+        rows = [...rows, extra];
+    }
+    const matches = rows
+        .filter(r => !term || r[nameKey].toLowerCase().includes(term))
+        .slice(0, 50); // cap so a long list doesn't render an enormous menu
+
+    let html;
+    if (matches.length > 0) {
+        html = matches.map(r =>
+            `<button type="button" class="list-group-item list-group-item-action small py-1 px-2" data-lookup-id="${r[idKey]}">${escapeHtml(lookupRowLabel(kind, r))}</button>`
+        ).join('');
+    } else {
+        html = `<div class="list-group-item text-muted small py-1 px-2">No matches${term ? ` for "${escapeHtml(filterText.trim())}"` : ''}</div>`;
+    }
+    menu.innerHTML = html;
+    menu.classList.remove('d-none');
+}
+
+// Called once from wireEvents() for each kind to attach the listeners;
+// initLookupSearchSelect() (below) re-primes it each time the modal opens.
+function wireLookupSearchSelect(kind) {
+    const { idKey, dataKey } = LOOKUP_KINDS[kind];
+    const { searchInput, menu, wrap } = getLookupSelectEls(kind);
+
+    searchInput.addEventListener('focus', () => renderLookupSelectMenu(kind, searchInput.value));
+    searchInput.addEventListener('input', () => renderLookupSelectMenu(kind, searchInput.value));
+    searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeLookupSelectMenu(kind);
+    });
+    menu.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-lookup-id]');
+        if (!btn) return;
+        const id = btn.getAttribute('data-lookup-id');
+        const extra = lookupSelectExtraOption[kind];
+        const row = (extra && String(extra[idKey]) === id)
+            ? extra
+            : lookups[dataKey].find(r => String(r[idKey]) === id);
+        setLookupSelection(kind, row || null);
+        closeLookupSelectMenu(kind);
+    });
+    // Typed text that was never picked from the list shouldn't silently
+    // keep whatever value was previously selected — reconcile on blur.
+    // The short delay lets a click on a menu item (which blurs the input
+    // first) register.
+    searchInput.addEventListener('blur', () => {
+        setTimeout(() => {
+            const { hiddenInput } = getLookupSelectEls(kind);
+            const hiddenId = hiddenInput.value;
+            const extra = lookupSelectExtraOption[kind];
+            const selectedRow = hiddenId
+                ? ((extra && String(extra[idKey]) === String(hiddenId)) ? extra : lookups[dataKey].find(r => String(r[idKey]) === String(hiddenId)))
+                : null;
+            if (searchInput.value.trim() !== lookupRowLabel(kind, selectedRow)) {
+                setLookupSelection(kind, selectedRow || null);
+            }
+            closeLookupSelectMenu(kind);
+        }, 150);
+    });
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest(`#${wrap.id}`)) closeLookupSelectMenu(kind);
+    });
+}
+
+function wireLookupSearchSelects() {
+    Object.keys(LOOKUP_KINDS).forEach(wireLookupSearchSelect);
+}
+
+// Called from openEmployeeModal() for each of the three fields. Mirrors
+// the old setLookupSelectValue(): defaults to the first active row when
+// there's no current value (new employee), and if `currentId` belongs to
+// a disabled row, keeps it selectable via lookupSelectExtraOption instead
+// of silently clearing the field.
+function initLookupSearchSelect(kind, currentId) {
+    const { idKey, dataKey } = LOOKUP_KINDS[kind];
+    const rows = lookups[dataKey];
+    lookupSelectExtraOption[kind] = null;
+
+    if (currentId == null) {
+        setLookupSelection(kind, activeLookupRows(rows)[0] || null);
+        closeLookupSelectMenu(kind);
+        return;
+    }
+
+    let row = activeLookupRows(rows).find(r => String(r[idKey]) === String(currentId));
+    if (!row) {
+        row = rows.find(r => String(r[idKey]) === String(currentId));
+        if (row) lookupSelectExtraOption[kind] = row;
+    }
+    setLookupSelection(kind, row || null);
+    closeLookupSelectMenu(kind);
 }
 
 // ---------------------------------------------------------------------
@@ -876,9 +1248,9 @@ function openEmployeeModal(emp) {
     document.getElementById('genderInput').value = emp ? emp.gender : (lookups.genders[0]?.gender_id ?? '');
     const defaultRole = lookups.roles.find(r => r.role_name === 'user')?.role_id ?? lookups.roles[0]?.role_id ?? '';
     document.getElementById('roleInput').value = emp ? emp.role : defaultRole;
-    document.getElementById('positionInput').value = emp ? emp.post_id : (lookups.positions[0]?.post_id ?? '');
-    document.getElementById('departmentInput').value = emp ? emp.dept_id : (lookups.departments[0]?.dept_id ?? '');
-    document.getElementById('businessUnitInput').value = emp ? emp.bu_id : (lookups.businessUnits[0]?.bu_id ?? '');
+    initLookupSearchSelect('position', emp ? emp.post_id : null);
+    initLookupSearchSelect('department', emp ? emp.dept_id : null);
+    initLookupSearchSelect('business_unit', emp ? emp.bu_id : null);
 
     const currentSupervisor = (emp && emp.supervisor_id)
         ? currentEmployees.find(x => String(x.id) === String(emp.supervisor_id))
@@ -909,10 +1281,16 @@ async function onSubmitEmployee(e) {
 
     const employeeId = document.getElementById('employeeIdInput').value.trim();
     const name = document.getElementById('nameInput').value.trim();
+    const postId = document.getElementById('positionInput').value;
+    const deptId = document.getElementById('departmentInput').value;
+    const buId = document.getElementById('businessUnitInput').value;
     const hiredDate = document.getElementById('hiredDateInput').value;
     const probationEndDate = document.getElementById('probationEndDateInput').value || null;
 
-    if (!employeeId || !name || !hiredDate) {
+    // Position/Department/Business unit are search-selects (hidden input +
+    // visible search text) rather than plain <select required>, so their
+    // "required" check has to happen here instead of via native validation.
+    if (!employeeId || !name || !postId || !deptId || !buId || !hiredDate) {
         showToast('Please fill in the required fields.', 'danger');
         return;
     }
@@ -930,9 +1308,9 @@ async function onSubmitEmployee(e) {
         name,
         gender: Number(document.getElementById('genderInput').value),
         role: Number(document.getElementById('roleInput').value),
-        post_id: Number(document.getElementById('positionInput').value),
-        dept_id: Number(document.getElementById('departmentInput').value),
-        bu_id: Number(document.getElementById('businessUnitInput').value),
+        post_id: Number(postId),
+        dept_id: Number(deptId),
+        bu_id: Number(buId),
         supervisor_id: document.getElementById('supervisorInput').value || null,
         hired_date: hiredDate,
         probation_end_date: probationEndDate,

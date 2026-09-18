@@ -1077,6 +1077,71 @@ a:hover { color: var(--accent-dark); }
 .toast-item.is-success { background: var(--success); }
 .toast-item.is-danger  { background: var(--danger); }
 
+/* Position/Department/Business unit labels: small "manage" icon button
+   next to the label text (see .label-action-btn below), opening
+   #lookupModal on the matching tab — see openLookupManager() in
+   employees.js. */
+#employeeModal .label-with-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.label-action-btn {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.label-action-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* #lookupModal: add/edit + enable/disable Position, Department, and
+   Business unit values, one tab per list. */
+#lookupModal .modal-dialog {
+  max-width: 460px;
+}
+#lookupModal .nav-tabs {
+  font-size: 0.85rem;
+}
+.lookup-manage-list {
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.lookup-manage-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.lookup-manage-row:last-child {
+  border-bottom: none;
+}
+.lookup-manage-row.is-disabled .lookup-manage-name {
+  color: var(--ink-faint);
+}
+.lookup-manage-name {
+  flex: 1;
+  font-size: 0.86rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lookup-manage-row-actions {
+  display: flex;
+  gap: 2px;
+}
+.lookup-manage-empty {
+  padding: 16px 10px;
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 0.85rem;
+}
+
 .danger-zone {
   border: 1px solid var(--danger-soft);
   border-radius: var(--radius-md);
