@@ -13,10 +13,28 @@
 //     someone's direct supervisor or an admin) theirs too. So one
 //     fetch covers "my requests" and "team requests to review" — this
 //     file just splits the same result set by employee_id client-side.
-//   - Approve/reject go through review_leave_request(); cancel goes
-//     through cancel_leave_request() — both SECURITY DEFINER RPCs, not
-//     direct updates, because only pending requests can transition and
-//     approver/timestamp must be stamped together.
+//   - Approve/reject always go through review_leave_request() (pending
+//     only, supervisor/admin).
+//   - Edit/Cancel on a still-PENDING request are available to whoever
+//     can see it, regardless of role — own pending in "My leave", or a
+//     team member's pending row in "Other leave requests" if you're
+//     their supervisor or an admin. Cancel goes through
+//     cancel_leave_request(); that RPC's own internal check needs to
+//     permit a supervisor/admin to cancel someone else's pending
+//     request too, not just the requester themselves — confirm that on
+//     the DB side if team-tab cancel comes back 42501. Edit is a plain
+//     table update (pending rows only, so nothing else can be racing
+//     against it).
+//   - Edit/Cancel on a request that is APPROVED or REJECTED are
+//     admin-only, regardless of whose request it is — a regular user
+//     (employee or supervisor) can't touch it once it's out of pending.
+//     Admin edit is a direct table update; admin cancel force-sets
+//     status = 3 directly rather than going through
+//     cancel_leave_request(), since that RPC only transitions
+//     still-pending requests. Both assume RLS already grants admins
+//     UPDATE on leave_requests (as it does for leave_types) — if that
+//     grant isn't in place yet, these will fail with a 42501 until the
+//     corresponding policy is added.
 //   - Inserting a new request never sets employee_id/requested_by/status
 //     directly for a non-admin — trg_leave_requests_defaults overwrites
 //     those server-side regardless of what the client sends. For an
@@ -36,6 +54,9 @@ let leaveTypes = [];        // all rows (active + inactive), for the admin manag
 let activeLeaveTypes = [];  // active-only, for the request form's select
 let selectableEmployees = []; // who I can file a request for, besides myself — admin: everyone; everyone else: same-department teammates minus their own supervisor (see list_my_leave_delegates())
 let allRequests = [];       // everything RLS lets me see: mine + (if supervisor/admin) my team's
+
+let showOnBehalfField = false; // set by populateEmployeeSelect() — whether the "Requesting for" picker has anything besides "Myself" to offer
+let editingRequestId = null;   // set while the modal is editing an existing request (admin-only) instead of creating a new one
 
 const STATUS_LABEL = { 0: 'Pending', 1: 'Approved', 2: 'Rejected', 3: 'Cancelled' };
 const STATUS_CLASS = { 0: 'is-pending', 1: 'is-approved', 2: 'is-rejected', 3: 'is-cancelled' };
@@ -156,6 +177,12 @@ function banIconSvg() {
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
         '<circle cx="12" cy="12" r="10"/><path d="M4.9 4.9l14.2 14.2"/></svg>';
 }
+// Same pencil path used for the "Manage leave types" button in
+// leaves.html, kept consistent for any other "edit this" affordance.
+function pencilIconSvg() {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+        '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
+}
 
 // ---------------------------------------------------------------------
 // DOM refs
@@ -167,16 +194,20 @@ const refreshListBtnLabel = document.getElementById('refreshListBtnLabel');
 const manageTypesBtn = document.getElementById('manageTypesBtn');
 const newRequestBtn = document.getElementById('newRequestBtn');
 
-const myRequestsBody = document.getElementById('myRequestsBody');
-const teamRequestsCard = document.getElementById('teamRequestsCard');
-const teamRequestsTitle = document.getElementById('teamRequestsTitle');
+const otherLeaveTabItem = document.getElementById('otherLeaveTabItem');
 const teamRequestsPendingPill = document.getElementById('teamRequestsPendingPill');
+
+const myRequestsBody = document.getElementById('myRequestsBody');
+const teamRequestsTitle = document.getElementById('teamRequestsTitle');
 const teamRequestsBody = document.getElementById('teamRequestsBody');
 
 const leaveRequestForm = document.getElementById('leaveRequestForm');
+const leaveRequestModalTitle = document.getElementById('leaveRequestModalTitle');
 const onBehalfOfField = document.getElementById('onBehalfOfField');
 const onBehalfOfHint = document.getElementById('onBehalfOfHint');
 const requestEmployeeSelect = document.getElementById('requestEmployeeSelect');
+const editingForBanner = document.getElementById('editingForBanner');
+const editingForText = document.getElementById('editingForText');
 const leaveTypeInput = document.getElementById('leaveTypeInput');
 const startDateInput = document.getElementById('startDateInput');
 const startHalfDayInput = document.getElementById('startHalfDayInput');
@@ -262,7 +293,7 @@ async function onRefreshClick() {
 
 // ---------------------------------------------------------------------
 // Supervisor detection (is anyone's supervisor_id == me?) — used only to
-// decide whether to show the "team requests" card title as such; RLS
+// decide whether to show the "team requests" tab title as such; RLS
 // already governs what rows actually come back regardless.
 // ---------------------------------------------------------------------
 async function checkSupervisorStatus() {
@@ -338,7 +369,8 @@ function populateEmployeeSelect() {
     // Nothing to hide behind "Myself" for a non-admin with no eligible
     // teammates (e.g. sole member of their department) — skip the field
     // entirely rather than show a picker with one option.
-    onBehalfOfField.classList.toggle('hidden', !isAdmin && others.length === 0);
+    showOnBehalfField = isAdmin || others.length > 0;
+    onBehalfOfField.classList.toggle('hidden', !showOnBehalfField);
 
     onBehalfOfHint.textContent = isAdmin
         ? 'Choosing anyone other than yourself creates the request already approved.'
@@ -406,7 +438,7 @@ function renderStats() {
 }
 
 // ---------------------------------------------------------------------
-// My requests table
+// My requests tab
 // ---------------------------------------------------------------------
 function renderMyRequests() {
     const mine = allRequests.filter(r => r.employee_id === myEmployeeId);
@@ -427,28 +459,45 @@ function renderMyRequests() {
             </td>
             <td class="reason-col">${escapeHtml(r.reason || '—')}</td>
             <td class="actions-col">
-                ${r.status === 0 ? `<button type="button" class="btn btn-outline-secondary btn-sm" data-cancel="${r.id}">Cancel</button>` : ''}
+                ${r.status === 0 ? `
+                    <button type="button" class="btn-icon-only" title="Edit" data-edit="${r.id}">${pencilIconSvg()}</button>
+                    <button type="button" class="btn-icon-only" title="Cancel" data-cancel="${r.id}">${banIconSvg()}</button>
+                ` : ''}
+                ${isAdmin && r.status !== 0 ? `
+                    <button type="button" class="btn-icon-only" title="Edit" data-edit="${r.id}">${pencilIconSvg()}</button>
+                    ${r.status !== 3 ? `<button type="button" class="btn-icon-only" title="Cancel" data-admin-cancel="${r.id}">${banIconSvg()}</button>` : ''}
+                ` : ''}
             </td>
         </tr>
     `).join('');
 
+    myRequestsBody.querySelectorAll('[data-edit]').forEach(btn => {
+        btn.addEventListener('click', () => openLeaveRequestModal(btn.dataset.edit));
+    });
     myRequestsBody.querySelectorAll('[data-cancel]').forEach(btn => {
         btn.addEventListener('click', () => onCancelRequest(btn.dataset.cancel));
+    });
+    myRequestsBody.querySelectorAll('[data-admin-cancel]').forEach(btn => {
+        btn.addEventListener('click', () => onAdminCancelRequest(btn.dataset.adminCancel));
     });
 }
 
 // ---------------------------------------------------------------------
-// Team requests table (only rows RLS lets me see beyond my own — i.e.
-// I'm the requester's direct supervisor, or I'm an admin)
+// Other leave requests tab (only rows RLS lets me see beyond my own —
+// i.e. I'm the requester's direct supervisor, or I'm an admin).
+// While a row is PENDING: Approve/Reject, Edit and Cancel are all
+// available, regardless of whether I'm a supervisor or an admin. Once
+// it's approved or rejected, only an admin can still Edit/Cancel it —
+// a supervisor gets no actions on it at all.
 // ---------------------------------------------------------------------
 function renderTeamRequests() {
     const team = allRequests.filter(r => r.employee_id !== myEmployeeId);
 
     if (team.length === 0) {
-        teamRequestsCard.classList.add('hidden');
+        otherLeaveTabItem.classList.add('hidden');
         return;
     }
-    teamRequestsCard.classList.remove('hidden');
+    otherLeaveTabItem.classList.remove('hidden');
     teamRequestsTitle.textContent = isAdmin ? 'All other requests' : 'Requests to review';
 
     const pendingCount = team.filter(r => r.status === 0).length;
@@ -474,6 +523,12 @@ function renderTeamRequests() {
                 ${r.status === 0 ? `
                     <button type="button" class="btn-icon-only" title="Approve" data-approve="${r.id}">${checkIconSvg()}</button>
                     <button type="button" class="btn-icon-only" title="Reject" data-reject="${r.id}">${xIconSvg()}</button>
+                    <button type="button" class="btn-icon-only" title="Edit" data-edit="${r.id}">${pencilIconSvg()}</button>
+                    <button type="button" class="btn-icon-only" title="Cancel" data-cancel="${r.id}">${banIconSvg()}</button>
+                ` : ''}
+                ${isAdmin && r.status !== 0 ? `
+                    <button type="button" class="btn-icon-only" title="Edit" data-edit="${r.id}">${pencilIconSvg()}</button>
+                    ${r.status !== 3 ? `<button type="button" class="btn-icon-only" title="Cancel" data-admin-cancel="${r.id}">${banIconSvg()}</button>` : ''}
                 ` : ''}
             </td>
         </tr>
@@ -484,6 +539,15 @@ function renderTeamRequests() {
     });
     teamRequestsBody.querySelectorAll('[data-reject]').forEach(btn => {
         btn.addEventListener('click', () => onReviewRequest(btn.dataset.reject, 'rejected'));
+    });
+    teamRequestsBody.querySelectorAll('[data-edit]').forEach(btn => {
+        btn.addEventListener('click', () => openLeaveRequestModal(btn.dataset.edit));
+    });
+    teamRequestsBody.querySelectorAll('[data-cancel]').forEach(btn => {
+        btn.addEventListener('click', () => onCancelRequest(btn.dataset.cancel));
+    });
+    teamRequestsBody.querySelectorAll('[data-admin-cancel]').forEach(btn => {
+        btn.addEventListener('click', () => onAdminCancelRequest(btn.dataset.adminCancel));
     });
 }
 
@@ -499,14 +563,46 @@ function renderDateRange(r) {
 }
 
 // ---------------------------------------------------------------------
-// New request modal
+// New / edit request modal
 // ---------------------------------------------------------------------
-function openLeaveRequestModal() {
+// Pass a request id (admin-only, from the "Other leave requests" tab) to
+// open in edit mode instead of creating a new request.
+function openLeaveRequestModal(requestId = null) {
     leaveRequestForm.reset();
-    if (!onBehalfOfField.classList.contains('hidden')) requestEmployeeSelect.value = myEmployeeId;
-    startHalfDayInput.value = 'full';
-    endHalfDayInput.value = 'full';
-    daysPreview.textContent = '';
+    editingRequestId = requestId;
+
+    if (requestId) {
+        const req = allRequests.find(r => r.id === requestId);
+        if (!req) return;
+
+        leaveRequestModalTitle.textContent = 'Edit leave request';
+        leaveRequestSubmitBtn.textContent = 'Save changes';
+
+        onBehalfOfField.classList.add('hidden');
+        editingForBanner.classList.remove('hidden');
+        editingForText.textContent =
+            `Editing request for ${embedded(req.employee, 'name')} (${embedded(req.employee, 'employee_id')})`;
+
+        leaveTypeInput.value = String(req.leave_type_id);
+        startDateInput.value = req.start_date;
+        startHalfDayInput.value = req.start_half_day;
+        endDateInput.value = req.end_date;
+        endHalfDayInput.value = req.end_half_day;
+        reasonInput.value = req.reason || '';
+        updateDaysPreview();
+    } else {
+        leaveRequestModalTitle.textContent = 'New leave request';
+        leaveRequestSubmitBtn.textContent = 'Submit request';
+
+        editingForBanner.classList.add('hidden');
+        onBehalfOfField.classList.toggle('hidden', !showOnBehalfField);
+        if (showOnBehalfField) requestEmployeeSelect.value = myEmployeeId;
+
+        startHalfDayInput.value = 'full';
+        endHalfDayInput.value = 'full';
+        daysPreview.textContent = '';
+    }
+
     leaveRequestModal.show();
 }
 
@@ -548,6 +644,35 @@ async function onSubmitLeaveRequest(e) {
     }
     if (startDate === endDate && startHalfDayInput.value !== endHalfDayInput.value) {
         showToast('For a single-day request, the start and end half-day must match.', 'danger');
+        return;
+    }
+
+    // Editing an existing request (admin only) — straight table update,
+    // no employee_id/status change involved. total_days is assumed to
+    // be recalculated server-side the same way it is on insert; if that
+    // trigger turns out to be insert-only, it'll need to be extended to
+    // fire BEFORE UPDATE too.
+    if (editingRequestId) {
+        const payload = {
+            leave_type_id: Number(leaveTypeInput.value),
+            start_date: startDate,
+            start_half_day: startHalfDayInput.value,
+            end_date: endDate,
+            end_half_day: endHalfDayInput.value,
+            reason: reasonInput.value.trim() || null
+        };
+
+        leaveRequestSubmitBtn.disabled = true;
+        const { error } = await sb.from('leave_requests').update(payload).eq('id', editingRequestId);
+        leaveRequestSubmitBtn.disabled = false;
+
+        if (error) {
+            showToast('Could not update request: ' + error.message, 'danger');
+            return;
+        }
+        showToast('Leave request updated.', 'success');
+        leaveRequestModal.hide();
+        await loadRequests();
         return;
     }
 
@@ -603,6 +728,30 @@ async function onCancelRequest(requestId) {
     if (!confirmed) return;
 
     const { error } = await sb.rpc('cancel_leave_request', { p_request_id: requestId });
+    if (error) {
+        showToast('Could not cancel request: ' + error.message, 'danger');
+        return;
+    }
+    showToast('Request cancelled.', 'success');
+    await loadRequests();
+}
+
+// Admin-only counterpart to onCancelRequest(), used for a request that's
+// already approved or rejected (pending requests use onCancelRequest()
+// and the RPC instead, same as anyone else). cancel_leave_request() only
+// transitions a still-pending request, so this goes straight through a
+// table update instead — see the note at the top of the file about the
+// RLS grant this depends on.
+async function onAdminCancelRequest(requestId) {
+    const confirmed = await showConfirmDialog({
+        title: 'Cancel this request?',
+        message: 'This leave request will be marked as cancelled, regardless of its current status. This cannot be undone.',
+        confirmLabel: 'Cancel request',
+        danger: true
+    });
+    if (!confirmed) return;
+
+    const { error } = await sb.from('leave_requests').update({ status: 3 }).eq('id', requestId);
     if (error) {
         showToast('Could not cancel request: ' + error.message, 'danger');
         return;

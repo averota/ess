@@ -57,49 +57,70 @@
 
         <div class="stats-grid" id="statsGrid"></div>
 
-        <div class="room-manage-card table-card">
-          <div class="table-toolbar">
-            <h3>My requests</h3>
-          </div>
-          <div class="table-scroll">
-            <table class="data-table" id="myRequestsTable">
-              <thead>
-                <tr>
-                  <th>Leave type</th>
-                  <th>Dates</th>
-                  <th>Days</th>
-                  <th>Status</th>
-                  <th>Reason</th>
-                  <th class="actions-col">Action</th>
-                </tr>
-              </thead>
-              <tbody id="myRequestsBody"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="room-manage-card table-card hidden" id="teamRequestsCard">
-          <div class="table-toolbar">
-            <div class="section-title-row">
-              <h3 id="teamRequestsTitle">Requests to review</h3>
+        <!-- "My leave" vs "Other leave requests" tabs — the second tab
+             only appears once loadRequests() confirms there's anything
+             in it (i.e. I'm someone's supervisor or I'm admin); see
+             renderTeamRequests() in leaves.js. -->
+        <ul class="nav nav-tabs leaves-tabs" id="leavesTab" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="myLeaveTab" data-bs-toggle="tab" data-bs-target="#myLeavePane" type="button" role="tab" aria-controls="myLeavePane" aria-selected="true">
+              My leave
+            </button>
+          </li>
+          <li class="nav-item hidden" role="presentation" id="otherLeaveTabItem">
+            <button class="nav-link" id="otherLeaveTab" data-bs-toggle="tab" data-bs-target="#otherLeavePane" type="button" role="tab" aria-controls="otherLeavePane" aria-selected="false">
+              Other leave requests
               <span class="pending-count-pill hidden" id="teamRequestsPendingPill"></span>
+            </button>
+          </li>
+        </ul>
+
+        <div class="tab-content" id="leavesTabContent">
+          <div class="tab-pane fade show active" id="myLeavePane" role="tabpanel" aria-labelledby="myLeaveTab">
+            <div class="room-manage-card table-card">
+              <div class="table-toolbar">
+                <h3>My requests</h3>
+              </div>
+              <div class="table-scroll">
+                <table class="data-table" id="myRequestsTable">
+                  <thead>
+                    <tr>
+                      <th>Leave type</th>
+                      <th>Dates</th>
+                      <th>Days</th>
+                      <th>Status</th>
+                      <th>Reason</th>
+                      <th class="actions-col">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="myRequestsBody"></tbody>
+                </table>
+              </div>
             </div>
           </div>
-          <div class="table-scroll">
-            <table class="data-table" id="teamRequestsTable">
-              <thead>
-                <tr>
-                  <th class="employee-col">Employee</th>
-                  <th>Leave type</th>
-                  <th>Dates</th>
-                  <th>Days</th>
-                  <th>Status</th>
-                  <th>Reason</th>
-                  <th class="actions-col">Action</th>
-                </tr>
-              </thead>
-              <tbody id="teamRequestsBody"></tbody>
-            </table>
+
+          <div class="tab-pane fade" id="otherLeavePane" role="tabpanel" aria-labelledby="otherLeaveTab">
+            <div class="room-manage-card table-card">
+              <div class="table-toolbar">
+                <h3 id="teamRequestsTitle">Requests to review</h3>
+              </div>
+              <div class="table-scroll">
+                <table class="data-table" id="teamRequestsTable">
+                  <thead>
+                    <tr>
+                      <th class="employee-col">Employee</th>
+                      <th>Leave type</th>
+                      <th>Dates</th>
+                      <th>Days</th>
+                      <th>Status</th>
+                      <th>Reason</th>
+                      <th class="actions-col">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="teamRequestsBody"></tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -110,13 +131,13 @@
   <aside class="app-sidebar" id="sidebarRoot"></aside>
 </div>
 
-<!-- New / on-behalf-of leave request -->
+<!-- New / edit / on-behalf-of leave request -->
 <div class="modal fade" id="leaveRequestModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
       <form id="leaveRequestForm">
         <div class="modal-header">
-          <h5 class="modal-title">New leave request</h5>
+          <h5 class="modal-title" id="leaveRequestModalTitle">New leave request</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
@@ -125,6 +146,10 @@
             <label class="form-label" for="requestEmployeeSelect">Requesting for</label>
             <select class="form-select form-select-sm" id="requestEmployeeSelect"></select>
             <p id="onBehalfOfHint" class="mb-0"></p>
+          </div>
+
+          <div id="editingForBanner" class="hidden">
+            <p id="editingForText" class="mb-0"></p>
           </div>
 
           <div class="row g-3">

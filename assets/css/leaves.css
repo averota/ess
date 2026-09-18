@@ -29,6 +29,42 @@
 }
 
 /* ---------------------------------------------------------------- */
+/* "My leave" / "Other leave requests" tabs — plain Bootstrap nav-tabs
+   (same component #lookupModal already uses), restyled to sit flush
+   with the page instead of Bootstrap's boxed default. The second tab
+   starts hidden and is only revealed once renderTeamRequests() in
+   leaves.js confirms there's anything in it. */
+/* ---------------------------------------------------------------- */
+.leaves-tabs {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+  gap: 4px;
+}
+.leaves-tabs .nav-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 10px 4px;
+  margin-right: 22px;
+  background: transparent;
+  color: var(--ink-faint);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.leaves-tabs .nav-link:hover {
+  color: var(--ink);
+  border-color: var(--border);
+}
+.leaves-tabs .nav-link.active {
+  color: var(--accent-dark);
+  border-color: var(--accent);
+  background: transparent;
+}
+
+/* ---------------------------------------------------------------- */
 /* Requests tables                                                   */
 /* ---------------------------------------------------------------- */
 #myRequestsTable .reason-col,
@@ -58,13 +94,6 @@
   margin-top: 2px;
 }
 
-/* Team-requests card title gets a small pending-count pill so it reads
-   at a glance without opening the table. */
-.section-title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 .pending-count-pill {
   display: inline-flex;
   align-items: center;
@@ -80,7 +109,7 @@
 }
 
 /* ---------------------------------------------------------------- */
-/* New request modal                                                 */
+/* New / edit / on-behalf-of request modal                           */
 /* ---------------------------------------------------------------- */
 #leaveRequestModal .modal-dialog {
   max-width: 520px;
@@ -92,19 +121,25 @@
   --bs-gutter-x: 0.75rem;
   --bs-gutter-y: 0.75rem;
 }
-#onBehalfOfField {
+#onBehalfOfField,
+#editingForBanner {
   background: var(--accent-soft);
   border-radius: var(--radius-sm);
   padding: 10px 12px;
   margin-bottom: 4px;
 }
-#onBehalfOfField .form-label {
+#onBehalfOfField .form-label,
+#editingForBanner p {
   color: var(--accent-dark);
 }
 #onBehalfOfHint {
   font-size: 0.78rem;
   color: var(--accent-dark);
   margin-top: 4px;
+}
+#editingForBanner p {
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 .half-day-row {
   display: grid;
