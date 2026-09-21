@@ -9,8 +9,28 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="../assets/css/styles.css" rel="stylesheet">
+<link href="../assets/css/policies.css" rel="stylesheet">
 </head>
 <body data-page="policies">
+
+<!--
+  HOW THIS PAGE IS ORGANISED — add new policies without restructuring:
+
+  Tab      A category of policies. Add a <button role="tab"> to #policyTabs
+           and a matching <div class="tab-pane"> to #policyPanes.
+  Section  One policy inside a tab. Copy any .policy-section: an always-visible
+           header (title + current value), a collapsible .policy-body, and a
+           .policy-foot with its own Save button.
+  Hooks    data-field   = column name in the policy tables (03_policies_schemas.sql)
+           data-summary = text slot in a header that shows the current value
+           data-audit   = "last changed" text, from modified_by / last_modified
+
+  Leave-type items are not written here: policies.js clones #ltItemTemplate once
+  per row of leave_types (joined with leave_type_policies).
+
+  Logic lives in assets/js/policies.js. Each section is wired with one
+  createSection({...}) config there; a new section needs one more config.
+-->
 
 <div class="app-shell" id="appShell">
   <div class="app-main">
@@ -24,10 +44,321 @@
     </header>
 
     <main class="page-content">
-      <div class="dashboard-shell">
-        <div class="dashboard-card">
-          <h1>Policies</h1>
-          <p>This page is coming soon — it'll handle company policies and guidelines here.</p>
+      <div class="page-wrap policies-page">
+
+        <div class="panel panel-error hidden" id="policiesError" role="alert"></div>
+        <div class="panel panel-status hidden" id="policiesReadOnly">You can view policies here, but only admins can change them.</div>
+
+        <!-- ============================================================ -->
+        <!-- Category tabs                                                -->
+        <!-- ============================================================ -->
+        <div class="policy-tabs-bar">
+          <div class="policy-tabs" id="policyTabs" role="tablist" aria-label="Policy categories">
+            <button type="button" class="policy-tab active" id="tab-working-time" role="tab"
+                    data-bs-toggle="tab" data-bs-target="#pane-working-time"
+                    aria-controls="pane-working-time" aria-selected="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path>
+              </svg>
+              Working time
+            </button>
+            <button type="button" class="policy-tab" id="tab-leave-types" role="tab"
+                    data-bs-toggle="tab" data-bs-target="#pane-leave-types"
+                    aria-controls="pane-leave-types" aria-selected="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m12 2 10 5-10 5L2 7l10-5z"></path><path d="m2 17 10 5 10-5"></path><path d="m2 12 10 5 10-5"></path>
+              </svg>
+              Leave types
+            </button>
+          </div>
+        </div>
+
+        <div class="tab-content" id="policyPanes">
+
+          <!-- ========================================================== -->
+          <!-- TAB: Working time  (policy_weekly_working_days, policy_settings) -->
+          <!-- ========================================================== -->
+          <div class="tab-pane fade show active" id="pane-working-time" role="tabpanel"
+               aria-labelledby="tab-working-time" tabindex="0">
+            <div class="policy-group">
+
+              <!-- Section: working week -->
+              <section class="policy-section" id="sec-weekly">
+                <h2 class="policy-section-head">
+                  <button type="button" class="policy-toggle" data-bs-toggle="collapse"
+                          data-bs-target="#body-weekly" aria-expanded="true" aria-controls="body-weekly">
+                    <svg class="policy-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+                    <span class="policy-title">Working week</span>
+                    <span class="policy-summary" data-summary="weekly">Loading…</span>
+                  </button>
+                </h2>
+                <div class="collapse show" id="body-weekly">
+                  <div class="policy-body">
+                    <p class="policy-hint">Leave requests deduct working days only: full = 1, half = 0.5, off = 0.</p>
+                    <div class="week-strip">
+                      <div class="week-day" data-day-of-week="1">
+                        <span class="week-day-name" title="Monday">Mon</span>
+                        <div class="seg" role="radiogroup" aria-label="Monday">
+                          <input type="radio" name="dow-1" id="dow-1-off" value="0" data-field="working_value"><label class="seg-off" for="dow-1-off">Off</label>
+                          <input type="radio" name="dow-1" id="dow-1-half" value="0.5" data-field="working_value"><label class="seg-half" for="dow-1-half" title="Half day">½<span class="visually-hidden"> day</span></label>
+                          <input type="radio" name="dow-1" id="dow-1-full" value="1" data-field="working_value" checked><label class="seg-full" for="dow-1-full">Full</label>
+                        </div>
+                      </div>
+                      <div class="week-day" data-day-of-week="2">
+                        <span class="week-day-name" title="Tuesday">Tue</span>
+                        <div class="seg" role="radiogroup" aria-label="Tuesday">
+                          <input type="radio" name="dow-2" id="dow-2-off" value="0" data-field="working_value"><label class="seg-off" for="dow-2-off">Off</label>
+                          <input type="radio" name="dow-2" id="dow-2-half" value="0.5" data-field="working_value"><label class="seg-half" for="dow-2-half" title="Half day">½<span class="visually-hidden"> day</span></label>
+                          <input type="radio" name="dow-2" id="dow-2-full" value="1" data-field="working_value" checked><label class="seg-full" for="dow-2-full">Full</label>
+                        </div>
+                      </div>
+                      <div class="week-day" data-day-of-week="3">
+                        <span class="week-day-name" title="Wednesday">Wed</span>
+                        <div class="seg" role="radiogroup" aria-label="Wednesday">
+                          <input type="radio" name="dow-3" id="dow-3-off" value="0" data-field="working_value"><label class="seg-off" for="dow-3-off">Off</label>
+                          <input type="radio" name="dow-3" id="dow-3-half" value="0.5" data-field="working_value"><label class="seg-half" for="dow-3-half" title="Half day">½<span class="visually-hidden"> day</span></label>
+                          <input type="radio" name="dow-3" id="dow-3-full" value="1" data-field="working_value" checked><label class="seg-full" for="dow-3-full">Full</label>
+                        </div>
+                      </div>
+                      <div class="week-day" data-day-of-week="4">
+                        <span class="week-day-name" title="Thursday">Thu</span>
+                        <div class="seg" role="radiogroup" aria-label="Thursday">
+                          <input type="radio" name="dow-4" id="dow-4-off" value="0" data-field="working_value"><label class="seg-off" for="dow-4-off">Off</label>
+                          <input type="radio" name="dow-4" id="dow-4-half" value="0.5" data-field="working_value"><label class="seg-half" for="dow-4-half" title="Half day">½<span class="visually-hidden"> day</span></label>
+                          <input type="radio" name="dow-4" id="dow-4-full" value="1" data-field="working_value" checked><label class="seg-full" for="dow-4-full">Full</label>
+                        </div>
+                      </div>
+                      <div class="week-day" data-day-of-week="5">
+                        <span class="week-day-name" title="Friday">Fri</span>
+                        <div class="seg" role="radiogroup" aria-label="Friday">
+                          <input type="radio" name="dow-5" id="dow-5-off" value="0" data-field="working_value"><label class="seg-off" for="dow-5-off">Off</label>
+                          <input type="radio" name="dow-5" id="dow-5-half" value="0.5" data-field="working_value"><label class="seg-half" for="dow-5-half" title="Half day">½<span class="visually-hidden"> day</span></label>
+                          <input type="radio" name="dow-5" id="dow-5-full" value="1" data-field="working_value" checked><label class="seg-full" for="dow-5-full">Full</label>
+                        </div>
+                      </div>
+                      <div class="week-day" data-day-of-week="6">
+                        <span class="week-day-name" title="Saturday">Sat</span>
+                        <div class="seg" role="radiogroup" aria-label="Saturday">
+                          <input type="radio" name="dow-6" id="dow-6-off" value="0" data-field="working_value" checked><label class="seg-off" for="dow-6-off">Off</label>
+                          <input type="radio" name="dow-6" id="dow-6-half" value="0.5" data-field="working_value"><label class="seg-half" for="dow-6-half" title="Half day">½<span class="visually-hidden"> day</span></label>
+                          <input type="radio" name="dow-6" id="dow-6-full" value="1" data-field="working_value"><label class="seg-full" for="dow-6-full">Full</label>
+                        </div>
+                      </div>
+                      <div class="week-day" data-day-of-week="7">
+                        <span class="week-day-name" title="Sunday">Sun</span>
+                        <div class="seg" role="radiogroup" aria-label="Sunday">
+                          <input type="radio" name="dow-7" id="dow-7-off" value="0" data-field="working_value" checked><label class="seg-off" for="dow-7-off">Off</label>
+                          <input type="radio" name="dow-7" id="dow-7-half" value="0.5" data-field="working_value"><label class="seg-half" for="dow-7-half" title="Half day">½<span class="visually-hidden"> day</span></label>
+                          <input type="radio" name="dow-7" id="dow-7-full" value="1" data-field="working_value"><label class="seg-full" for="dow-7-full">Full</label>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="policy-foot">
+                    <span class="policy-audit" data-audit>Last changed —</span>
+                    <div class="policy-foot-actions">
+                      <button type="button" class="btn btn-ghost hidden" data-discard>Discard</button>
+                      <button type="button" class="btn btn-accent" data-save="weekly" disabled>Save changes</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Section: standard monthly working days -->
+              <section class="policy-section" id="sec-monthly">
+                <h2 class="policy-section-head">
+                  <button type="button" class="policy-toggle collapsed" data-bs-toggle="collapse"
+                          data-bs-target="#body-monthly" aria-expanded="false" aria-controls="body-monthly">
+                    <svg class="policy-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+                    <span class="policy-title">Monthly working days</span>
+                    <span class="policy-flag" title="Saved now; leave logic will start using it in a later update.">Not enforced yet</span>
+                    <span class="policy-summary" data-summary="monthly">Loading…</span>
+                  </button>
+                </h2>
+                <div class="collapse" id="body-monthly">
+                  <div class="policy-body">
+                    <div class="policy-fields">
+                      <div class="policy-field">
+                        <label class="form-label" for="monthly-days">Standard working days per month</label>
+                        <div class="input-group policy-num">
+                          <input type="number" class="form-control" id="monthly-days" data-field="standard_monthly_working_days"
+                                 min="1" max="31" step="0.5" value="22" inputmode="decimal">
+                          <span class="input-group-text">days</span>
+                        </div>
+                      </div>
+                      <p class="policy-hint">Typical values are 22, 24 or 26.</p>
+                    </div>
+                  </div>
+                  <div class="policy-foot">
+                    <span class="policy-audit" data-audit>Last changed —</span>
+                    <div class="policy-foot-actions">
+                      <button type="button" class="btn btn-ghost hidden" data-discard>Discard</button>
+                      <button type="button" class="btn btn-accent" data-save="monthly" disabled>Save changes</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Section: leave year cut-off -->
+              <section class="policy-section" id="sec-cutoff">
+                <h2 class="policy-section-head">
+                  <button type="button" class="policy-toggle collapsed" data-bs-toggle="collapse"
+                          data-bs-target="#body-cutoff" aria-expanded="false" aria-controls="body-cutoff">
+                    <svg class="policy-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+                    <span class="policy-title">Leave year cut-off</span>
+                    <span class="policy-flag" title="Saved now; leave logic will start using it in a later update.">Not enforced yet</span>
+                    <span class="policy-summary" data-summary="cutoff">Loading…</span>
+                  </button>
+                </h2>
+                <div class="collapse" id="body-cutoff">
+                  <div class="policy-body">
+                    <div class="policy-fields">
+                      <div class="policy-field">
+                        <label class="form-label" for="cutoff-month">Last day of the leave year</label>
+                        <div class="policy-date">
+                          <select class="form-select" id="cutoff-month" data-field="year_cutoff_month" aria-label="Month" data-month-select></select>
+                          <input type="number" class="form-control" id="cutoff-day" data-field="year_cutoff_day"
+                                 min="1" max="31" step="1" value="31" inputmode="numeric" aria-label="Day">
+                        </div>
+                      </div>
+                      <p class="policy-hint">The leave year runs <span data-cycle-hint>1 Jan – 31 Dec</span>. February is capped at 28 so the date exists every year.</p>
+                    </div>
+                  </div>
+                  <div class="policy-foot">
+                    <span class="policy-audit" data-audit>Last changed —</span>
+                    <div class="policy-foot-actions">
+                      <button type="button" class="btn btn-ghost hidden" data-discard>Discard</button>
+                      <button type="button" class="btn btn-accent" data-save="cutoff" disabled>Save changes</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+            </div>
+          </div>
+
+          <!-- ========================================================== -->
+          <!-- TAB: Leave types  (leave_type_policies, one row per type)   -->
+          <!-- ========================================================== -->
+          <div class="tab-pane fade" id="pane-leave-types" role="tabpanel"
+               aria-labelledby="tab-leave-types" tabindex="0">
+
+            <p class="policy-note">
+              <span class="policy-flag">Not enforced yet</span>
+              <span>Values are saved, but balances, carry forward and the back-date limit aren't applied to leave requests yet.</span>
+            </p>
+
+            <div class="empty-state" id="ltLoading">Loading leave types…</div>
+
+            <div class="policy-group lt-list hidden" id="ltList">
+
+              <!-- Decorative column headers; each cell also carries its own label for screen readers -->
+              <div class="lt-cols" aria-hidden="true">
+                <span></span>
+                <span>Leave type</span>
+                <span>Beginning balance</span>
+                <span>Max balance</span>
+                <span>Back-date</span>
+                <span>Carry forward</span>
+              </div>
+
+              <!-- One .lt-item per leave type is added here by policies.js (from the template below) -->
+            </div>
+
+            <!-- Leave-type item. policies.js clones this once per row of leave_types and
+                 replaces {{id}} with leave_type_id. -->
+            <template id="ltItemTemplate">
+              <article class="lt-item" data-leave-type-id="{{id}}">
+                <h2 class="lt-head">
+                  <button type="button" class="lt-toggle collapsed" data-bs-toggle="collapse"
+                          data-bs-target="#lt-{{id}}-body" aria-expanded="false" aria-controls="lt-{{id}}-body">
+                    <svg class="policy-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+                    <span class="lt-name"><span data-lt-name></span></span>
+                    <span class="lt-cells">
+                      <span class="lt-cell"><span class="lt-cell-label">Beginning </span><span data-summary="beginning_balance">—</span></span>
+                      <span class="lt-cell"><span class="lt-cell-label">Max </span><span data-summary="max_balance">—</span></span>
+                      <span class="lt-cell"><span class="lt-cell-label">Back-date </span><span data-summary="backdate_days">—</span></span>
+                      <span class="lt-cell"><span class="lt-cell-label">Carry forward </span><span data-summary="carry_forward">—</span></span>
+                    </span>
+                  </button>
+                </h2>
+                <div class="collapse" id="lt-{{id}}-body" data-bs-parent="#ltList">
+                  <div class="policy-body">
+                    <div class="lt-groups">
+                      <fieldset class="lt-group">
+                        <legend>Balance</legend>
+                        <div class="lt-group-fields">
+                          <div class="policy-field">
+                            <label class="form-label" for="lt{{id}}-beginning">Beginning of year</label>
+                            <div class="input-group policy-num">
+                              <input type="number" class="form-control" id="lt{{id}}-beginning" data-field="beginning_balance" min="0" max="9999.9" step="0.5" inputmode="decimal">
+                              <span class="input-group-text">days</span>
+                            </div>
+                          </div>
+                          <div class="policy-field">
+                            <label class="form-label" for="lt{{id}}-max">Maximum</label>
+                            <div class="input-group policy-num">
+                              <input type="number" class="form-control" id="lt{{id}}-max" data-field="max_balance" min="0" max="9999.9" step="0.5" placeholder="No cap" inputmode="decimal">
+                              <span class="input-group-text">days</span>
+                            </div>
+                          </div>
+                        </div>
+                        <p class="policy-hint">Maximum includes carried-forward days. Leave blank for no cap.</p>
+                      </fieldset>
+                      <fieldset class="lt-group">
+                        <legend>Requests</legend>
+                        <div class="lt-group-fields">
+                          <div class="policy-field">
+                            <label class="form-label" for="lt{{id}}-backdate">Back-date up to</label>
+                            <div class="input-group policy-num">
+                              <input type="number" class="form-control" id="lt{{id}}-backdate" data-field="backdate_days" min="0" max="365" step="1" inputmode="numeric">
+                              <span class="input-group-text">days</span>
+                            </div>
+                          </div>
+                        </div>
+                        <p class="policy-hint">0 means no back-dating.</p>
+                      </fieldset>
+                      <fieldset class="lt-group">
+                        <legend>Carry forward</legend>
+                        <div class="lt-group-fields">
+                          <div class="policy-field">
+                            <label class="form-label" for="lt{{id}}-carry">Maximum carried</label>
+                            <div class="input-group policy-num">
+                              <input type="number" class="form-control" id="lt{{id}}-carry" data-field="max_carry_forward" min="0" max="9999.9" step="0.5" inputmode="decimal">
+                              <span class="input-group-text">days</span>
+                            </div>
+                          </div>
+                          <div class="policy-field">
+                            <label class="form-label" for="lt{{id}}-exp-month">Lapse on</label>
+                            <div class="policy-date">
+                              <select class="form-select" id="lt{{id}}-exp-month" data-field="carry_forward_expiry_month" data-month-select aria-label="Month">
+                                <option value="">Never</option>
+                              </select>
+                              <input type="number" class="form-control" id="lt{{id}}-exp-day" data-field="carry_forward_expiry_day" min="1" max="31" step="1" placeholder="Day" inputmode="numeric" aria-label="Day" disabled>
+                            </div>
+                          </div>
+                        </div>
+                        <p class="policy-hint">Unused carried days lapse on this date in the new year.</p>
+                      </fieldset>
+                    </div>
+                  </div>
+                  <div class="policy-foot">
+                    <span class="policy-audit" data-audit>Last changed —</span>
+                    <div class="policy-foot-actions">
+                      <button type="button" class="btn btn-ghost hidden" data-discard>Discard</button>
+                      <button type="button" class="btn btn-accent" data-save="leave_type" disabled>Save changes</button>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            </template>
+
+            <!-- Shown by policies.js when leave_types is empty -->
+            <div class="empty-state hidden" id="leaveTypesEmpty">
+              No leave types yet. Add one and it will appear here with its own policy to set.
+            </div>
+          </div>
+
         </div>
       </div>
     </main>
@@ -36,8 +367,12 @@
   <aside class="app-sidebar" id="sidebarRoot"></aside>
 </div>
 
+<div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/js/supabaseClient.js"></script>
 <script src="../assets/js/sidebar.js"></script>
+<script src="../assets/js/policies.js"></script>
 </body>
 </html>

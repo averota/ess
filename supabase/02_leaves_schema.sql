@@ -13,7 +13,16 @@
 --   public.track_audit_columns(), and the default-privileges grants are
 --   all reused here, not redefined. This file only adds new objects.
 --
--- Fresh setup:  run 01, then this file. Nothing else is needed.
+-- Also depends on 03_policies_schemas.sql for ONE thing: total_days is
+-- calculated from public.policy_weekly_working_days (see "Working-day
+-- model" below). 03 in turn needs public.leave_types from this file, so
+-- the order is 01, 02, 03. The trigger function below is created fine
+-- before 03 exists (plpgsql doesn't check table names at create time),
+-- but inserting/editing a leave request before 03 has run will fail with
+-- "relation public.policy_weekly_working_days does not exist" — so run
+-- 03 straight after this file.
+--
+-- Fresh setup:  run 01, then this file, then 03.
 -- Existing DB:  just re-run this file. It upgrades in place (adds
 --   leave_requests.review_comment if missing, replaces the functions).
 --
@@ -95,6 +104,27 @@
 --   - total_days is computed automatically by
 --     trg_leave_requests_calc_total_days on insert/update; never set it
 --     directly from the client.
+--
+-- Working-day model (total_days):
+--   total_days counts WORKING days, not calendar days, using the weekly
+--   pattern admins set on the Policies page
+--   (public.policy_weekly_working_days: Mon-Sun, 0 = day off, 0.5 = half
+--   day, 1 = full day). Each date in start_date..end_date contributes
+--   that weekday's working value:
+--     * a full-day request on a full working day (1)   counts 1
+--     * a full-day request on a half working day (0.5) counts 0.5
+--     * a full-day request on a day off (0)            counts 0
+--     * an 'am'/'pm' half on the first or last day     counts half a
+--       day, but never more than that day's working value (so a half
+--       day taken on a 0.5 working day still counts 0.5, and on a day
+--       off still counts 0)
+--   Example with the default Mon-Fri pattern: Fri to Mon (both full
+--   days) = 2 days, not 4.
+--   The value is fixed when the request is inserted or its dates/half-
+--   day flags are edited. Changing the weekly pattern later does NOT
+--   rewrite existing requests, so approved history stays as it was.
+--   A request whose dates fall entirely on days off comes out as 0.
+--   Public holidays are not modelled.
 -- =====================================================================
 
 
@@ -458,21 +488,38 @@ create trigger trg_leave_requests_defaults
 
 
 -- ---------------------------------------------------------------------
--- Trigger: compute total_days from the date range + half-day flags.
+-- Trigger: compute total_days from the date range + half-day flags,
+-- counting only working days per public.policy_weekly_working_days
+-- (file 03). See "Working-day model" in the header for the rules.
+--
+-- SECURITY DEFINER so the calculation never depends on the caller's
+-- read access to the policy table.
 -- ---------------------------------------------------------------------
 create or replace function public.calculate_leave_request_total_days()
 returns trigger
 language plpgsql
+security definer
 set search_path = ''
 as $$
 begin
-    if new.start_date = new.end_date then
-        new.total_days := case when new.start_half_day = 'full' then 1 else 0.5 end;
-    else
-        new.total_days := (new.end_date - new.start_date + 1)
-            - case when new.start_half_day <> 'full' then 0.5 else 0 end
-            - case when new.end_half_day   <> 'full' then 0.5 else 0 end;
-    end if;
+    select coalesce(sum(
+               case
+                   -- 'am'/'pm' on the first or last day: half a day at
+                   -- most, and never more than that weekday's value
+                   when (d.leave_day = new.start_date and new.start_half_day <> 'full')
+                     or (d.leave_day = new.end_date   and new.end_half_day   <> 'full')
+                   then least(w.working_value, 0.5)
+                   else w.working_value
+               end
+           ), 0)
+      into new.total_days
+      from (
+            select new.start_date + g.i as leave_day
+              from generate_series(0, new.end_date - new.start_date) as g(i)
+           ) d
+      join public.policy_weekly_working_days w
+        on w.day_of_week = extract(isodow from d.leave_day)::smallint;
+
     return new;
 end;
 $$;
