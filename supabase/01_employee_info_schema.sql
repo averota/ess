@@ -157,6 +157,7 @@ create table if not exists public.employees (
     post_id             integer not null references public.positions (post_id),
     dept_id             integer not null references public.departments (dept_id),
     bu_id               integer not null references public.business_units (bu_id),
+    telegram_chat_id    text unique, -- optional; alert message via Telegram bot when leave request is approved/rejected
     supervisor_id       uuid references public.employees (id), -- nullable: top of the org chart, or not yet assigned
     hired_date          date not null,
     probation_end_date  date not null, -- defaults to hired_date + 3 months (see trigger below); freely editable after that

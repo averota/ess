@@ -8,8 +8,10 @@
 //
 // Soft-delete: "removing" an employee sets `last_day` rather than
 // deleting the row (an ordinary admin UPDATE, already covered by RLS).
-// The row's Action column then offers "Reactivate" instead of "Edit"/
-// "End employment" once last_day has passed.
+// The row's Action column then offers "Reactivate" instead of
+// "End employment" once last_day has passed. Clicking anywhere else on a
+// row opens the employee details card (#employeeModal): editable for
+// active employees, read-only for inactive ones.
 //
 // Bulk upload mirrors holidays.js: header-alias mapping, required-field
 // validation, in-file dedupe, editable preview grid, and separate
@@ -21,6 +23,8 @@
 
 let employeeModal;
 let editingEmployeeId = null;
+let employeeModalMode = 'add';   // 'add' (blank form) | 'view' (details card of an existing employee)
+let employeeFormSnapshot = null; // JSON of the form values when the card opened — used to detect changes
 let lookups = { genders: [], roles: [], positions: [], departments: [], businessUnits: [] };
 let currentEmployees = [];
 let currentDataset = null;
@@ -379,6 +383,12 @@ async function init() {
 function wireEvents() {
     document.getElementById('addEmployeeBtn').addEventListener('click', () => openEmployeeModal(null));
     document.getElementById('employeeForm').addEventListener('submit', onSubmitEmployee);
+    // Any edit inside the details card re-checks whether the Save button should show.
+    // (The search-selects set hidden inputs from code, so they call
+    // refreshEmployeeSaveButton() themselves — see setLookupSelection/setSupervisorSelection.)
+    document.getElementById('employeeReactivateBtn').addEventListener('click', onReactivateFromCard);
+    document.getElementById('employeeForm').addEventListener('input', refreshEmployeeSaveButton);
+    document.getElementById('employeeForm').addEventListener('change', refreshEmployeeSaveButton);
 
     refreshListBtn.addEventListener('click', onRefreshClick);
     exportExcelBtn.addEventListener('click', onExportExcelClick);
@@ -782,6 +792,7 @@ let supervisorSearchExcludeId = null;
 function setSupervisorSelection(emp) {
     document.getElementById('supervisorInput').value = emp ? emp.id : '';
     supervisorSearchInput.value = emp ? `${emp.name} (${emp.employee_id})` : '';
+    refreshEmployeeSaveButton();
 }
 
 function closeSupervisorMenu() {
@@ -889,6 +900,7 @@ function setLookupSelection(kind, row) {
     const { searchInput, hiddenInput } = getLookupSelectEls(kind);
     hiddenInput.value = row ? row[idKey] : '';
     searchInput.value = lookupRowLabel(kind, row);
+    refreshEmployeeSaveButton();
 }
 
 function closeLookupSelectMenu(kind) {
@@ -1039,7 +1051,7 @@ async function loadEmployees() {
     const { data, error } = await sb
         .from('employees')
         .select(`
-            id, employee_id, name, hired_date, probation_end_date, last_day, email, auth_user_id,
+            id, employee_id, name, hired_date, probation_end_date, last_day, email, telegram_chat_id, auth_user_id,
             gender, post_id, dept_id, bu_id, role, supervisor_id,
             gender_info:genders(gender_name),
             position_info:positions!post_id(position),
@@ -1137,6 +1149,20 @@ function renderTable(employees, totalCount) {
         const supervisorName = getSupervisorName(emp);
         const tr = document.createElement('tr');
 
+        // Whole row opens the details card. Focusable + Enter/Space so it also
+        // works from the keyboard; the action buttons stop propagation so they
+        // don't trigger it.
+        tr.classList.add('is-clickable');
+        tr.tabIndex = 0;
+        tr.addEventListener('click', () => openEmployeeModal(emp));
+        tr.addEventListener('keydown', (e) => {
+            if (e.target !== tr) return;
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                openEmployeeModal(emp);
+            }
+        });
+
         const idxTd = document.createElement('td');
         idxTd.className = 'idx-col';
         idxTd.textContent = i + 1;
@@ -1166,34 +1192,13 @@ function renderTable(employees, totalCount) {
         const wrap = document.createElement('div');
         wrap.className = 'actions-wrap';
 
-        const editBtn = document.createElement('button');
-        editBtn.type = 'button';
-        editBtn.className = 'btn-icon-only';
-        editBtn.innerHTML = editIconSvg();
-        if (isActive) {
-            editBtn.title = 'Edit this employee';
-            editBtn.addEventListener('click', () => openEmployeeModal(emp));
-        } else {
-            // Not using the native `disabled` attribute here: some browsers
-            // (notably Firefox) suppress the title tooltip on disabled
-            // buttons. No click listener is attached in this branch, so the
-            // button is already inert — this just makes it look and act
-            // (cursor-wise) unclickable while the tooltip keeps working.
-            editBtn.title = 'Inactive employees can\'t be edited — reactivate first';
-            editBtn.setAttribute('aria-disabled', 'true');
-            editBtn.classList.add('is-disabled');
-            editBtn.style.opacity = '0.4';
-            editBtn.style.cursor = 'not-allowed';
-        }
-        wrap.appendChild(editBtn);
-
         if (isActive) {
             const endBtn = document.createElement('button');
             endBtn.type = 'button';
             endBtn.className = 'btn-icon-only';
             endBtn.title = 'End employment (sets Last day)';
             endBtn.innerHTML = trashIconSvg();
-            endBtn.addEventListener('click', () => onEndEmployment(emp));
+            endBtn.addEventListener('click', (e) => { e.stopPropagation(); onEndEmployment(emp); });
             wrap.appendChild(endBtn);
         } else {
             const reactivateBtn = document.createElement('button');
@@ -1201,7 +1206,7 @@ function renderTable(employees, totalCount) {
             reactivateBtn.className = 'btn-icon-only';
             reactivateBtn.title = 'Reactivate (clears Last day)';
             reactivateBtn.innerHTML = undoIconSvg();
-            reactivateBtn.addEventListener('click', () => onReactivate(emp));
+            reactivateBtn.addEventListener('click', (e) => { e.stopPropagation(); onReactivate(emp); });
             wrap.appendChild(reactivateBtn);
         }
 
@@ -1245,7 +1250,8 @@ function onExportExcelClick() {
         'Probation end date': emp.probation_end_date || '',
         'Last day': emp.last_day || '',
         'Status': isEmployeeActive(emp) ? 'Active' : 'Inactive',
-        'Email': emp.email || ''
+        'Email': emp.email || '',
+        'Telegram chat ID': emp.telegram_chat_id || ''
     }));
 
     const worksheet = XLSX.utils.json_to_sheet(rows);
@@ -1257,11 +1263,87 @@ function onExportExcelClick() {
 // ---------------------------------------------------------------------
 // Add / edit (single-record form)
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// Employee details card (#employeeModal)
+//
+// Clicking a row opens this card in "view" mode: every field is shown and
+// editable, but the Save button stays hidden until something actually
+// differs from what was loaded. Inactive employees open read-only (the whole
+// form is inside a disabled <fieldset>) — same rule as the old Edit button:
+// reactivate first. "Add employee" opens the same modal in "add" mode, where
+// Save is always visible.
+// ---------------------------------------------------------------------
+function readEmployeeFormValues() {
+    const val = (id) => document.getElementById(id).value.trim();
+    return {
+        employee_id: val('employeeIdInput'),
+        name: val('nameInput'),
+        gender: val('genderInput'),
+        role: val('roleInput'),
+        post_id: val('positionInput'),
+        dept_id: val('departmentInput'),
+        bu_id: val('businessUnitInput'),
+        supervisor_id: val('supervisorInput'),
+        hired_date: val('hiredDateInput'),
+        probation_end_date: val('probationEndDateInput'),
+        last_day: val('lastDayInput'),
+        email: val('emailInput'),
+        telegram_chat_id: val('telegramChatIdInput')
+    };
+}
+
+function isEmployeeFormDirty() {
+    return employeeFormSnapshot !== null &&
+        JSON.stringify(readEmployeeFormValues()) !== employeeFormSnapshot;
+}
+
+// Shows Save only when there's something to save. Called on every input/
+// change in the form and whenever a search-select sets its hidden value.
+function refreshEmployeeSaveButton() {
+    const saveBtn = document.getElementById('employeeSubmitBtn');
+    const cancelBtn = document.getElementById('employeeCancelBtn');
+    if (!saveBtn || !cancelBtn) return;
+
+    if (employeeModalMode === 'add') {
+        saveBtn.classList.remove('d-none');
+        cancelBtn.textContent = 'Cancel';
+        return;
+    }
+    const dirty = isEmployeeFormDirty();
+    saveBtn.classList.toggle('d-none', !dirty);
+    cancelBtn.textContent = dirty ? 'Cancel' : 'Close';
+}
+
+// Front-end uniqueness check for telegram_chat_id, mirroring the database's
+// unique constraint on that column. Excludes the record being edited.
+function isTelegramChatIdTaken(chatId, excludeId) {
+    return currentEmployees.some(emp =>
+        emp.telegram_chat_id && emp.telegram_chat_id === chatId && String(emp.id) !== String(excludeId)
+    );
+}
+
+// Opens the card for `emp` (or a blank "Add employee" form when null).
 function openEmployeeModal(emp) {
-    if (emp && !isEmployeeActive(emp)) return; // safety net — inactive employees are edit-locked in the UI
+    populateEmployeeModal(emp);
+    employeeModal.show();
+}
+
+// Fills the card's fields from `emp` without (re)opening it. Also used to
+// refresh the card in place after a save or a reactivation, so it stays open
+// and reflects the saved data (e.g. flips to read-only if Last day was set).
+function populateEmployeeModal(emp) {
+    const isView = !!emp;
+    const readOnly = isView && !isEmployeeActive(emp);
+
+    employeeModalMode = isView ? 'view' : 'add';
+    employeeFormSnapshot = null; // no change detection while the form is being filled in
 
     editingEmployeeId = emp ? emp.id : null;
-    document.getElementById('employeeModalTitle').textContent = emp ? 'Edit employee' : 'Add employee';
+    document.getElementById('employeeModalTitle').textContent = emp ? 'Employee details' : 'Add employee';
+    document.getElementById('employeeSubmitBtn').textContent = emp ? 'Save changes' : 'Save employee';
+    document.getElementById('employeeFieldset').disabled = readOnly;
+    document.getElementById('employeeReadonlyNotice').classList.toggle('d-none', !readOnly);
+    document.getElementById('employeeReactivateBtn').classList.toggle('d-none', !readOnly);
     document.getElementById('employeeIdInput').value = emp ? emp.employee_id : '';
 
     document.getElementById('nameInput').value = emp ? emp.name : '';
@@ -1282,8 +1364,23 @@ function openEmployeeModal(emp) {
     document.getElementById('probationHint').style.display = emp ? 'none' : 'inline';
     document.getElementById('lastDayInput').value = emp ? (emp.last_day || '') : '';
     document.getElementById('emailInput').value = emp ? (emp.email || '') : '';
+    document.getElementById('telegramChatIdInput').value = emp ? (emp.telegram_chat_id || '') : '';
 
-    employeeModal.show();
+    // Baseline for change detection — taken after every field is populated.
+    employeeFormSnapshot = JSON.stringify(readEmployeeFormValues());
+    refreshEmployeeSaveButton();
+}
+
+// "Reactivate" button in the card footer (inactive employees only).
+async function onReactivateFromCard() {
+    const emp = currentEmployees.find(x => String(x.id) === String(editingEmployeeId));
+    if (!emp) return;
+    const ok = await onReactivate(emp);
+    if (!ok) return;
+    // List was reloaded by onReactivate() — refresh the open card, which is
+    // now active and therefore editable again.
+    const fresh = currentEmployees.find(x => String(x.id) === String(editingEmployeeId));
+    if (fresh) populateEmployeeModal(fresh);
 }
 
 // Front-end uniqueness check against the in-memory employee list, mirroring
@@ -1298,6 +1395,10 @@ function isEmployeeIdTaken(employeeId, excludeId) {
 
 async function onSubmitEmployee(e) {
     e.preventDefault();
+
+    // Pressing Enter in a field submits the form even while Save is hidden —
+    // ignore it when nothing has changed.
+    if (employeeModalMode === 'view' && !isEmployeeFormDirty()) return;
 
     const employeeId = document.getElementById('employeeIdInput').value.trim();
     const name = document.getElementById('nameInput').value.trim();
@@ -1323,6 +1424,18 @@ async function onSubmitEmployee(e) {
         return;
     }
 
+    // Blank -> null (not ''), otherwise the unique constraint would treat
+    // every employee without a Telegram ID as a duplicate of the others.
+    const telegramChatId = document.getElementById('telegramChatIdInput').value.trim() || null;
+    if (telegramChatId && !/^-?\d+$/.test(telegramChatId)) {
+        showToast('Telegram chat ID must be a number, e.g. 123456789.', 'danger');
+        return;
+    }
+    if (telegramChatId && isTelegramChatIdTaken(telegramChatId, editingEmployeeId)) {
+        showToast(`Telegram chat ID "${telegramChatId}" is already linked to another employee.`, 'danger');
+        return;
+    }
+
     const payload = {
         employee_id: employeeId,
         name,
@@ -1335,7 +1448,8 @@ async function onSubmitEmployee(e) {
         hired_date: hiredDate,
         probation_end_date: probationEndDate,
         last_day: document.getElementById('lastDayInput').value || null,
-        email: document.getElementById('emailInput').value.trim() || null
+        email: document.getElementById('emailInput').value.trim() || null,
+        telegram_chat_id: telegramChatId
     };
 
     const submitBtn = document.getElementById('employeeSubmitBtn');
@@ -1353,15 +1467,26 @@ async function onSubmitEmployee(e) {
     if (error) {
         if (error.code === '23505' && /employee_id/.test(error.message)) {
             showToast(`Employee ID "${employeeId}" is already in use — please choose a different one.`, 'danger');
+        } else if (error.code === '23505' && /telegram_chat_id/.test(error.message)) {
+            showToast(`Telegram chat ID "${telegramChatId}" is already linked to another employee.`, 'danger');
         } else {
             showToast('Could not save employee: ' + error.message, 'danger');
         }
         return;
     }
 
-    showToast(editingEmployeeId ? 'Employee updated.' : 'Employee added.', 'success');
-    employeeModal.hide();
+    const savedId = editingEmployeeId;
+    showToast(savedId ? 'Employee updated.' : 'Employee added.', 'success');
     await Promise.all([loadEmployees(), loadStats()]);
+
+    if (savedId) {
+        // Editing: keep the card open (it's only closed manually). Reload it
+        // from the saved data so the Save button hides again.
+        const fresh = currentEmployees.find(x => String(x.id) === String(savedId));
+        if (fresh) populateEmployeeModal(fresh);
+    } else {
+        employeeModal.hide(); // a newly added employee has no card to keep open
+    }
 }
 
 async function onEndEmployment(emp) {
@@ -1389,15 +1514,16 @@ async function onReactivate(emp) {
         message: `Clear the last day for <strong>${escapeHtml(emp.name)}</strong> and mark them active again?`,
         confirmLabel: 'Reactivate'
     });
-    if (!ok) return;
+    if (!ok) return false;
 
     const { error } = await sb.from('employees').update({ last_day: null }).eq('id', emp.id);
     if (error) {
         showToast('Could not update: ' + error.message, 'danger');
-        return;
+        return false;
     }
     showToast('Employee reactivated.', 'success');
     await Promise.all([loadEmployees(), loadStats()]);
+    return true; // lets the details card refresh itself
 }
 
 // ---------------------------------------------------------------------

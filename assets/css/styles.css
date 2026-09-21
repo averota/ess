@@ -899,6 +899,14 @@ a:hover { color: var(--accent-dark); }
 #viewListTable th:nth-child(9), #viewListTable td:nth-child(9) { width: 90px; }  /* Status */
 #viewListTable .actions-col { width: 64px; }
 
+/* Rows open the employee details card when clicked (see renderTable() in employees.js). */
+#viewListTable tbody tr.is-clickable { cursor: pointer; }
+#viewListTable tbody tr.is-clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--bg);
+}
+
 .status-badge {
   display: inline-flex;
   align-items: center;

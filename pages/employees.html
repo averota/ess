@@ -86,7 +86,7 @@
         <!-- Meta bar -->
         <div id="metaBar" class="meta-bar">
           <div>
-            <p class="meta">View, add, edit, and manage employee records.</p>
+            <p class="meta">View, add, edit, and manage employee records. Click a row to see an employee's details.</p>
           </div>
           <div class="d-flex gap-2 flex-wrap">
             <button id="refreshListBtn" class="btn btn-ghost btn-sm btn-icon" type="button">
@@ -283,6 +283,12 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
         </div>
         <div class="modal-body">
+          <!-- Shown instead of an editable form when an inactive employee is opened -->
+          <div id="employeeReadonlyNotice" class="alert alert-secondary py-2 px-3 small d-none mb-2">
+            This employee is inactive, so their details are read-only. Reactivate them to make changes.
+          </div>
+          <!-- <fieldset disabled> natively disables every control inside it (read-only mode) -->
+          <fieldset id="employeeFieldset">
           <div class="row g-3">
             <div class="col-md-6">
               <label class="form-label">Employee ID <span class="text-muted fw-normal">(must be unique)</span></label>
@@ -368,10 +374,22 @@
               <label class="form-label">Email <span class="text-muted fw-normal">(optional — grants portal access)</span></label>
               <input type="email" class="form-control" id="emailInput" placeholder="name@company.com">
             </div>
+
+            <div class="col-12">
+              <label class="form-label">Telegram chat ID <span class="text-muted fw-normal">(optional — must be unique)</span></label>
+              <input type="text" class="form-control" id="telegramChatIdInput" placeholder="e.g. 123456789" autocomplete="off">
+              <div class="form-text" style="font-size: 0.72rem;">Used by the Telegram bot to send leave approved/rejected alerts. Leave blank if not linked.</div>
+            </div>
           </div>
+          </fieldset>
         </div>
         <div class="modal-footer">
-          <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <!-- Inactive employees only (toggled in populateEmployeeModal) -->
+          <button type="button" class="btn btn-sm btn-outline-secondary btn-icon me-auto d-none" id="employeeReactivateBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v6h6"/></svg>
+            Reactivate
+          </button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="employeeCancelBtn" data-bs-dismiss="modal">Cancel</button>
           <button type="submit" class="btn btn-sm btn-accent" id="employeeSubmitBtn">Save employee</button>
         </div>
       </form>
