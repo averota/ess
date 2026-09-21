@@ -12,13 +12,18 @@
 //     leave_requests returns your own requests, plus (if you're
 //     someone's direct supervisor or an admin) theirs too. So one
 //     fetch covers "my requests" and "team requests to review" — this
-//     file just splits the same result set by employee_id client-side.
+//     file just splits the same result set client-side (see
+//     isTeamRequest(): by employee_id, plus whether I'm an admin or the
+//     employee's direct supervisor).
 //   - Approve/reject always go through review_leave_request() (pending
-//     only, supervisor/admin).
+//     only, supervisor/admin). A rejection needs a reason (rejection_reason).
+//     An approval may carry an optional comment, stored in
+//     leave_requests.review_comment by a follow-up call to
+//     set_leave_review_comment() — see supabase/04_leave_review_comment.sql.
 //   - Edit/Cancel on a still-PENDING request are available to whoever
 //     can see it, regardless of role — own pending in "My leave", or a
-//     team member's pending row in "Other leave requests" if you're
-//     their supervisor or an admin. Cancel goes through
+//     team member's pending row in the "Team requests" tab if you're
+//     an admin. Cancel goes through
 //     cancel_leave_request(); that RPC's own internal check needs to
 //     permit a supervisor/admin to cancel someone else's pending
 //     request too, not just the requester themselves — confirm that on
@@ -44,19 +49,25 @@
 
 let leaveRequestModal;
 let manageTypesModal;
+let leaveDetailModal;
 
 let myEmployeeId = null;   // employees.id (uuid) — not the human-readable employee_id
 let myEmployeeName = '';
 let isAdmin = false;
-let isSupervisor = false;
+let initialized = false;    // guards against ess:ready firing more than once (would double-wire every listener)
 
 let leaveTypes = [];        // all rows (active + inactive), for the admin manage-types list
 let activeLeaveTypes = [];  // active-only, for the request form's select
 let selectableEmployees = []; // who I can file a request for, besides myself — admin: everyone; everyone else: same-department teammates minus their own supervisor (see list_my_leave_delegates())
+let myReportIds = new Set(); // employees.id of my direct reports (non-admin only; admins already have authority over everyone)
+let reviewCommentSupported = true;    // flipped off if leave_requests.review_comment doesn't exist yet (see loadRequests)
+let supervisorEmbedSupported = true; // flipped off if PostgREST can't resolve the nested supervisor lookup (see loadRequests)
+let approverByEmployee = new Map(); // employees.id -> that employee's supervisor {id, name, employee_id}, from list_leave_approvers() — fills in names the nested embed can't read under RLS (non-admins)
+let approverRpcSupported = true;    // flipped off if list_leave_approvers() isn't installed (see loadApproverDirectory)
 let allRequests = [];       // everything RLS lets me see: mine + (if supervisor/admin) my team's
 
 let showOnBehalfField = false; // set by populateEmployeeSelect() — whether the "Requesting for" picker has anything besides "Myself" to offer
-let editingRequestId = null;   // set while the modal is editing an existing request (admin-only) instead of creating a new one
+let editingRequestId = null;   // set while the modal is editing an existing request instead of creating a new one
 
 const STATUS_LABEL = { 0: 'Pending', 1: 'Approved', 2: 'Rejected', 3: 'Cancelled' };
 const STATUS_CLASS = { 0: 'is-pending', 1: 'is-approved', 2: 'is-rejected', 3: 'is-cancelled' };
@@ -81,6 +92,18 @@ function formatDateShort(dateStr) {
     const d = parseDateOnly(dateStr);
     if (!d || isNaN(d)) return '—';
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function formatDateLong(dateStr) {
+    const d = parseDateOnly(dateStr);
+    if (!d || isNaN(d)) return '—';
+    return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function formatDateTime(iso) {
+    const d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d)) return '';
+    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
 // Plain string comparison works here since dates are always 'YYYY-MM-DD'
@@ -131,6 +154,60 @@ function embedded(rel, key = 'name') {
     return rel[key] || '';
 }
 
+// "Name (ID)" wherever an employee is shown — falls back gracefully if
+// either piece is missing (e.g. the embedded join came back empty).
+function formatEmployeeName(rel) {
+    const name = embedded(rel, 'name');
+    const empId = embedded(rel, 'employee_id');
+    if (!name) return empId || '—';
+    return empId ? `${name} (${empId})` : name;
+}
+
+// The single employee row embedded in a request (object or one-item array).
+function embeddedRow(rel) {
+    return Array.isArray(rel) ? (rel[0] || null) : (rel || null);
+}
+
+// Who can approve a PENDING request: the employee's current direct
+// supervisor (approval permission follows the current supervisor, so this
+// stays accurate if it changes). Admins can approve any request too, which
+// is why an employee with no supervisor assigned resolves to "admin".
+// Returns '' rather than guessing when the supervisor info wasn't loaded.
+// The table row uses the name alone to stay compact; the details view
+// passes withId = true for "Name (ID)".
+function pendingApproverName(r, withId = false) {
+    if (r.status !== 0) return '';
+    const emp = embeddedRow(r.employee);
+
+    // Name from the nested embed when RLS allowed it, else from the RPC
+    // (which also covers a teammate's row whose employee embed came back
+    // empty).
+    const sup = embeddedRow(emp?.supervisor) || approverByEmployee.get(r.employee_id) || null;
+    if (sup) {
+        if (sup.id === myEmployeeId) return 'you';
+        return withId ? formatEmployeeName(sup) : (sup.name || formatEmployeeName(sup));
+    }
+    if (!emp) return '';                           // couldn't resolve the employee at all — say nothing rather than guess
+    if (emp.supervisor_id) return 'supervisor';    // one is assigned, but neither route could read their name
+    if (emp.supervisor_id === null) return 'admin'; // nobody assigned
+    return '';                                     // supervisor info not loaded
+}
+
+// Second line under the status badge: "Awaiting <approver>" while pending,
+// "by <approver>" once approved/rejected. Comments (approval note /
+// rejection reason) live in the details view, not in the row.
+function statusSubText(r) {
+    if (r.status === 0) {
+        const who = pendingApproverName(r);
+        return who ? `Awaiting ${who}` : '';
+    }
+    if (r.status === 1 || r.status === 2) {
+        const name = embedded(r.approver, 'name');
+        return name ? `by ${name}` : '';
+    }
+    return '';
+}
+
 function ensureToastStack() {
     let stack = document.querySelector('.toast-stack');
     if (!stack) {
@@ -172,10 +249,12 @@ function showConfirmDialog({ title, message, confirmLabel = 'Confirm', danger = 
     });
 }
 
-// Small dialog to collect a single required line of text (used for the
-// rejection reason — the DB itself won't accept a rejection without one,
-// see leave_requests_rejection_reason_check).
-function promptTextDialog({ title, message, confirmLabel = 'Confirm', placeholder = '' }) {
+// Small dialog to collect a line of text. Resolves to the trimmed text
+// ('' if left blank when `required` is false), or null if cancelled.
+//  - Rejection reason: required (default) — the DB itself won't accept a
+//    rejection without one, see leave_requests_rejection_reason_check.
+//  - Approval comment: `required: false, danger: false`.
+function promptTextDialog({ title, message, confirmLabel = 'Confirm', placeholder = '', required = true, danger = true, maxLength = 0 }) {
     return new Promise((resolve) => {
         const overlay = document.createElement('div');
         overlay.className = 'modal-overlay';
@@ -183,10 +262,10 @@ function promptTextDialog({ title, message, confirmLabel = 'Confirm', placeholde
             <div class="modal-box">
                 <h3>${escapeHtml(title)}</h3>
                 <p>${message}</p>
-                <textarea class="form-control form-control-sm mb-2" id="promptTextInput" rows="3" placeholder="${escapeHtml(placeholder)}"></textarea>
+                <textarea class="form-control form-control-sm mb-2" id="promptTextInput" rows="3" placeholder="${escapeHtml(placeholder)}"${maxLength ? ` maxlength="${maxLength}"` : ''}></textarea>
                 <div class="modal-actions">
                     <button type="button" class="btn btn-outline-secondary btn-sm" data-action="cancel">Cancel</button>
-                    <button type="button" class="btn btn-rose btn-sm" data-action="confirm">${escapeHtml(confirmLabel)}</button>
+                    <button type="button" class="btn ${danger ? 'btn-rose' : 'btn-accent'} btn-sm" data-action="confirm">${escapeHtml(confirmLabel)}</button>
                 </div>
             </div>`;
         document.body.appendChild(overlay);
@@ -198,7 +277,7 @@ function promptTextDialog({ title, message, confirmLabel = 'Confirm', placeholde
         overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(null); });
         overlay.querySelector('[data-action="confirm"]').addEventListener('click', () => {
             const val = input.value.trim();
-            if (!val) { alert('Please enter a reason.'); return; }
+            if (!val && required) { alert('Please enter a reason.'); return; }
             cleanup(val);
         });
     });
@@ -223,6 +302,15 @@ function pencilIconSvg() {
         '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
 }
 
+function eyeIconSvg() {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+        '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+}
+function moreIconSvg() {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+        '<circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>';
+}
+
 // ---------------------------------------------------------------------
 // DOM refs
 // ---------------------------------------------------------------------
@@ -233,7 +321,10 @@ const refreshListBtnLabel = document.getElementById('refreshListBtnLabel');
 const manageTypesBtn = document.getElementById('manageTypesBtn');
 const newRequestBtn = document.getElementById('newRequestBtn');
 
+const myLeaveTab = document.getElementById('myLeaveTab');
+const otherLeaveTab = document.getElementById('otherLeaveTab');
 const otherLeaveTabItem = document.getElementById('otherLeaveTabItem');
+const myRequestsPendingPill = document.getElementById('myRequestsPendingPill');
 const teamRequestsPendingPill = document.getElementById('teamRequestsPendingPill');
 
 const myRequestsBody = document.getElementById('myRequestsBody');
@@ -255,6 +346,11 @@ const reasonInput = document.getElementById('reasonInput');
 const daysPreview = document.getElementById('daysPreview');
 const leaveRequestSubmitBtn = document.getElementById('leaveRequestSubmitBtn');
 
+const leaveDetailModalEl = document.getElementById('leaveDetailModal');
+const leaveDetailStatus = document.getElementById('leaveDetailStatus');
+const leaveDetailBody = document.getElementById('leaveDetailBody');
+const leaveDetailActions = document.getElementById('leaveDetailActions');
+
 const newLeaveTypeInput = document.getElementById('newLeaveTypeInput');
 const addLeaveTypeBtn = document.getElementById('addLeaveTypeBtn');
 const leaveTypesManageList = document.getElementById('leaveTypesManageList');
@@ -265,6 +361,7 @@ const filterLeaveTypeBtn = document.getElementById('filterLeaveTypeBtn');
 const filterLeaveTypeList = document.getElementById('filterLeaveTypeList');
 const filterYearInput = document.getElementById('filterYearInput');
 const filterStatusInput = document.getElementById('filterStatusInput');
+const filterEmployeeInput = document.getElementById('filterEmployeeInput'); // Team requests tab only
 const clearAllFiltersBtn = document.getElementById('clearAllFiltersBtn');
 const activeFilterCount = document.getElementById('activeFilterCount');
 
@@ -278,8 +375,10 @@ let filteredRequests = []; // allRequests after Leave type / Year / Status filte
 window.addEventListener('ess:ready', onEssReady);
 
 async function onEssReady(e) {
+    if (initialized) return;
     const { session, employee } = e.detail;
     if (!session) return; // sidebar.js already redirected to login, or Supabase isn't configured
+    initialized = true;   // claimed synchronously so a second ess:ready can't slip in during the await below
 
     isAdmin = employee?.role === 1;
     myEmployeeName = employee?.name || '';
@@ -290,6 +389,7 @@ async function onEssReady(e) {
         .eq('auth_user_id', session.user.id)
         .maybeSingle();
     if (error || !me) {
+        initialized = false;
         console.error('leaves: could not resolve current employee record:', error);
         showToast('Could not load your employee profile.', 'danger');
         return;
@@ -303,18 +403,24 @@ async function onEssReady(e) {
 async function init() {
     leaveRequestModal = new bootstrap.Modal(document.getElementById('leaveRequestModal'));
     manageTypesModal = new bootstrap.Modal(document.getElementById('manageTypesModal'));
+    leaveDetailModal = new bootstrap.Modal(leaveDetailModalEl);
 
-    await checkSupervisorStatus();
     applyRoleVisibility();
     wireEvents();
     populateYearFilter();
 
-    await Promise.all([loadLeaveTypes(), loadSelectableEmployees()]);
+    // Request rows carry their own embedded leave_type / employee names,
+    // so the lookups and the requests load together — except that
+    // splitting rows into "My leave" vs "Team requests" needs my direct
+    // reports, so the requests fetch waits on that one (skipped for admins).
+    await Promise.all([
+        loadLeaveTypes(),
+        loadSelectableEmployees(),
+        loadMyReports().then(loadRequests)
+    ]);
     populateLeaveTypeSelect();
     populateEmployeeSelect();
     populateLeaveTypeFilter();
-
-    await loadRequests();
 }
 
 function applyRoleVisibility() {
@@ -334,12 +440,33 @@ function wireEvents() {
 
     filterYearInput.addEventListener('change', applyFilters);
     filterStatusInput.addEventListener('change', applyFilters);
+    filterEmployeeInput.addEventListener('change', applyFilters);
+    // The Employees filter only exists on the Team requests tab, so its
+    // visibility (and its share of the active-filter badge) follows the
+    // active tab. 'shown.bs.tab' also fires for programmatic Tab.show().
+    myLeaveTab.addEventListener('shown.bs.tab', onLeavesTabChanged);
+    otherLeaveTab.addEventListener('shown.bs.tab', onLeavesTabChanged);
     wireMultiSelectFilter(filterLeaveTypeList, filterSelection.leaveTypes);
     document.querySelectorAll('.btn-link-clear[data-clear-target]').forEach(btn => {
         btn.addEventListener('click', () => onClearMultiSelectFilter(btn.dataset.clearTarget));
     });
     clearAllFiltersBtn.addEventListener('click', clearAllFilters);
     initFilterDropdowns();
+
+    // One delegated listener per table instead of re-binding every
+    // button on every render.
+    myRequestsBody.addEventListener('click', onRowActionClick);
+    teamRequestsBody.addEventListener('click', onRowActionClick);
+
+    // Action buttons inside the details modal's footer (same actions as the
+    // row's dropdown). The modal closes first: the confirm/prompt dialogs
+    // and the edit modal can't take focus while this modal is trapping it.
+    leaveDetailActions.addEventListener('click', (e) => {
+        const btn = e.target.closest(ROW_ACTION_SELECTOR);
+        if (!btn) return;
+        leaveDetailModalEl.addEventListener('hidden.bs.modal', () => dispatchRowAction(btn), { once: true });
+        leaveDetailModal.hide();
+    });
 }
 
 async function onRefreshClick() {
@@ -348,29 +475,13 @@ async function onRefreshClick() {
     refreshListBtn.classList.add('is-refreshing');
     refreshListBtnLabel.textContent = 'Refreshing…';
     try {
+        await loadMyReports();
         await loadRequests();
     } finally {
         refreshListBtn.classList.remove('is-refreshing');
         refreshListBtnLabel.textContent = 'Refresh';
         refreshListBtn.disabled = false;
     }
-}
-
-// ---------------------------------------------------------------------
-// Supervisor detection (is anyone's supervisor_id == me?) — used only to
-// decide whether to show the "team requests" tab title as such; RLS
-// already governs what rows actually come back regardless.
-// ---------------------------------------------------------------------
-async function checkSupervisorStatus() {
-    const { count, error } = await sb
-        .from('employees')
-        .select('id', { count: 'exact', head: true })
-        .eq('supervisor_id', myEmployeeId);
-    if (error) {
-        console.error('leaves: could not check supervisor status:', error);
-        return;
-    }
-    isSupervisor = (count ?? 0) > 0;
 }
 
 // ---------------------------------------------------------------------
@@ -388,6 +499,24 @@ async function loadLeaveTypes() {
     }
     leaveTypes = data || [];
     activeLeaveTypes = leaveTypes.filter(t => t.is_active !== false);
+}
+
+// Direct reports: the employees I can review leave for as their supervisor.
+// Needed to tell "I filed this for someone I supervise" (actionable, goes
+// in Team requests) from "I filed this for a teammate" (read-only, stays
+// in My leave). Admins don't need it — they have authority over everyone.
+// On failure the previous set is kept, so behavior degrades to the old split.
+async function loadMyReports() {
+    if (isAdmin) return;
+    const { data, error } = await sb
+        .from('employees')
+        .select('id')
+        .eq('supervisor_id', myEmployeeId);
+    if (error) {
+        console.error('leaves: could not load direct reports:', error);
+        return;
+    }
+    myReportIds = new Set((data || []).map(e => e.id));
 }
 
 // Admins can file for anyone (existing full-directory read they already
@@ -418,8 +547,14 @@ async function loadSelectableEmployees() {
     selectableEmployees = data || [];
 }
 
-function populateLeaveTypeSelect() {
-    leaveTypeInput.innerHTML = activeLeaveTypes
+// `includeId`: when editing a request whose leave type has since been
+// disabled, that one type is kept in the list so the select can still
+// show (and re-submit) the request's current value.
+function populateLeaveTypeSelect(includeId = null) {
+    const selectable = includeId == null
+        ? activeLeaveTypes
+        : leaveTypes.filter(t => t.is_active !== false || String(t.leave_type_id) === String(includeId));
+    leaveTypeInput.innerHTML = selectable
         .map(t => `<option value="${t.leave_type_id}">${escapeHtml(t.leave_type)}</option>`)
         .join('');
 }
@@ -489,11 +624,15 @@ function wireMultiSelectFilter(listEl, selectedSet) {
     });
 }
 
-function onClearMultiSelectFilter(target) {
-    if (target !== 'leaveType') return;
+function resetLeaveTypeFilter() {
     filterSelection.leaveTypes.clear();
     filterLeaveTypeList.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
     updateMultiSelectButtonLabel(filterLeaveTypeBtn, 'Leave type', filterSelection.leaveTypes);
+}
+
+function onClearMultiSelectFilter(target) {
+    if (target !== 'leaveType') return;
+    resetLeaveTypeFilter();
     applyFilters();
 }
 
@@ -502,7 +641,7 @@ function updateMultiSelectButtonLabel(btn, label, selectedSet) {
     btn.classList.toggle('active-filter', selectedSet.size > 0);
 }
 
-// The Leave type menu lives inside #leavesFilterCard, a .room-manage-card
+// The Leave type menu lives inside #leavesTabsCard, a .room-manage-card
 // with `overflow: hidden` — same clipping concern as the employee
 // directory's filter dropdowns. A "fixed" Popper strategy positions the
 // menu relative to the viewport instead, so it's never clipped.
@@ -513,24 +652,25 @@ function initFilterDropdowns() {
 
 // Resets every filter control (leave type, year, status) in one go.
 function clearAllFilters() {
-    filterSelection.leaveTypes.clear();
-    filterLeaveTypeList.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
-    updateMultiSelectButtonLabel(filterLeaveTypeBtn, 'Leave type', filterSelection.leaveTypes);
+    resetLeaveTypeFilter();
     filterYearInput.value = String(new Date().getFullYear());
     filterStatusInput.value = '';
+    filterEmployeeInput.value = '';
     applyFilters();
 }
 
 // Filters allRequests down into filteredRequests, then re-renders both
-// tabs from it. Stats (renderStats()) intentionally stay based on the
+// tabs from it (the Employees filter only narrows Team requests rows). Stats (renderStats()) intentionally stay based on the
 // full, unfiltered allRequests — the stat cards are a page-level
 // summary, not scoped to whatever's currently filtered in the tables.
 function applyFilters() {
     const typeFilter = filterSelection.leaveTypes; // Set of leave_type_id strings, empty = all
     const yearFilter = filterYearInput.value;       // e.g. '2026'
     const statusFilter = filterStatusInput.value;   // '', '0'..'3'
+    const employeeFilter = filterEmployeeInput.value; // '' or an employees.id — applies to Team requests rows only
 
     filteredRequests = allRequests.filter(r => {
+        if (employeeFilter && !isMineRequest(r) && r.employee_id !== employeeFilter) return false;
         if (typeFilter.size > 0 && !typeFilter.has(String(r.leave_type_id))) return false;
         if (yearFilter) {
             const start = parseDateOnly(r.start_date);
@@ -545,6 +685,39 @@ function applyFilters() {
     renderTeamRequests();
 }
 
+function isTeamTabActive() {
+    return otherLeaveTab.classList.contains('active');
+}
+
+// Employees filter: single-select like Status, but only shown while the
+// Team requests tab is open — My leave is just me (plus leave I filed for
+// a teammate), so there's nothing to pick between there.
+function syncEmployeeFilterVisibility() {
+    filterEmployeeInput.classList.toggle('hidden', !isTeamTabActive());
+}
+
+function onLeavesTabChanged() {
+    syncEmployeeFilterVisibility();
+    updateActiveFilterBadge();
+}
+
+// Lists everyone who has at least one request in the (unfiltered) team
+// set, so it never offers someone with nothing to show. Keeps the current
+// pick across refreshes as long as that employee is still in the list.
+function populateEmployeeFilter() {
+    const current = filterEmployeeInput.value;
+    const employees = new Map(); // employees.id -> "Name (ID)"
+    for (const r of allRequests) {
+        if (isTeamRequest(r) && !employees.has(r.employee_id)) {
+            employees.set(r.employee_id, formatEmployeeName(r.employee));
+        }
+    }
+    const sorted = Array.from(employees).sort((a, b) => a[1].localeCompare(b[1]));
+    filterEmployeeInput.innerHTML = '<option value="">All employees</option>' +
+        sorted.map(([id, label]) => `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`).join('');
+    filterEmployeeInput.value = employees.has(current) ? current : '';
+}
+
 // Year defaults to the current year (not an "all years" state), so it
 // only counts toward the badge when the user has picked a different one.
 function updateActiveFilterBadge() {
@@ -552,6 +725,7 @@ function updateActiveFilterBadge() {
     if (filterSelection.leaveTypes.size > 0) count++;
     if (filterYearInput.value && filterYearInput.value !== String(new Date().getFullYear())) count++;
     if (filterStatusInput.value) count++;
+    if (isTeamTabActive() && filterEmployeeInput.value) count++; // hidden (and not applicable) on My leave
     activeFilterCount.textContent = String(count);
     activeFilterCount.classList.toggle('d-none', count === 0);
     clearAllFiltersBtn.disabled = count === 0;
@@ -578,17 +752,80 @@ function populateEmployeeSelect() {
 // ---------------------------------------------------------------------
 // Requests: one fetch, RLS-scoped (mine +, if applicable, my team's)
 // ---------------------------------------------------------------------
-async function loadRequests() {
-    const { data, error } = await sb
+// Supervisor names for the people whose requests I can see. A regular
+// employee usually can't read other employees' rows (RLS), so the nested
+// supervisor embed below comes back empty for them; this SECURITY DEFINER
+// RPC (supabase/05_leave_approver_names.sql) supplies the names instead.
+// Admins can read everyone, so they skip it. If the function isn't
+// installed yet, stop asking and fall back to "Awaiting supervisor";
+// any other error just keeps whatever was loaded last time.
+async function loadApproverDirectory() {
+    if (isAdmin || !approverRpcSupported) return;
+
+    let data = null;
+    let error = null;
+    try {
+        ({ data, error } = await sb.rpc('list_leave_approvers'));
+    } catch (err) {
+        error = err;
+    }
+    if (error) {
+        console.warn('leaves: could not load approver names:', error);
+        if (error.code === '42883' || /^PGRST/.test(error.code || '')) approverRpcSupported = false;
+        return;
+    }
+    approverByEmployee = new Map((data || []).map(a => [a.out_employee, {
+        id: a.out_supervisor,
+        name: a.out_supervisor_name,
+        employee_id: a.out_supervisor_code
+    }]));
+}
+
+// Each request's employee comes with their supervisor (the person who can
+// approve it while pending) so the tables can show "Awaiting <name>". That
+// nested lookup is optional: `supervisor_id` tells us whether one is
+// assigned at all, and the embed adds the name when RLS lets us read it.
+function requestSelect() {
+    const employeeCols = supervisorEmbedSupported
+        ? 'name, employee_id, supervisor_id, supervisor:supervisor_id(id, name, employee_id)'
+        : 'name, employee_id';
+    return `
+        id, employee_id, leave_type_id, start_date, start_half_day, end_date, end_half_day,
+        total_days, reason, status, rejection_reason, approved_at, created_at, requested_by,${reviewCommentSupported ? ' review_comment,' : ''}
+        employee:employee_id(${employeeCols}),
+        leave_type:leave_type_id(leave_type),
+        approver:approved_by(name)
+    `;
+}
+
+function fetchRequestRows() {
+    return sb
         .from('leave_requests')
-        .select(`
-            id, employee_id, leave_type_id, start_date, start_half_day, end_date, end_half_day,
-            total_days, reason, status, rejection_reason, approved_at, created_at,
-            employee:employee_id(name, employee_id),
-            leave_type:leave_type_id(leave_type),
-            approver:approved_by(name)
-        `)
+        .select(requestSelect())
         .order('created_at', { ascending: false });
+}
+
+async function loadRequests() {
+    const [rows] = await Promise.all([fetchRequestRows(), loadApproverDirectory()]);
+    let { data, error } = rows;
+
+    // Two optional extras ride along on this query — the approval comment
+    // column and the nested supervisor lookup. If the database can't
+    // resolve one of them (column not migrated yet: 42703; relationship
+    // problems: PGRST…), drop just that one and retry, so the list still
+    // loads. Network-level errors carry neither code and are not retried.
+    for (let attempt = 0; error && attempt < 2; attempt++) {
+        if (reviewCommentSupported && error.code === '42703' && /review_comment/.test(error.message || '')) {
+            console.warn('leaves: review_comment column not found, loading without approval comments:', error);
+            reviewCommentSupported = false;
+        } else if (supervisorEmbedSupported && /^PGRST/.test(error.code || '')) {
+            console.warn('leaves: approver lookup unavailable, loading requests without it:', error);
+            supervisorEmbedSupported = false;
+        } else {
+            break;
+        }
+        ({ data, error } = await fetchRequestRows());
+    }
 
     if (error) {
         console.error('leaves: could not load leave requests:', error);
@@ -598,31 +835,61 @@ async function loadRequests() {
 
     allRequests = data || [];
     renderStats();
+    updateTabBadges();
+    populateEmployeeFilter();
     applyFilters();
 }
 
 // ---------------------------------------------------------------------
 // Stats strip
 // ---------------------------------------------------------------------
+// Days of an approved request that fall inside [rangeStart, rangeEnd]
+// (inclusive; pass null for an open-ended side). Used to split approved
+// leave around today: "taken" is Jan 1 → today, "upcoming" is tomorrow → ∞,
+// so an in-progress request contributes to both and the two add up to its
+// total_days.
+//  - Request entirely inside the range: the server's total_days, as-is.
+//  - Request crossing a range boundary: counted client-side over just the
+//    slice inside the range, with the same formula updateDaysPreview()
+//    mirrors from the server (calendar days, minus 0.5 for a half-day
+//    start/end that's actually inside the slice).
+//  - Request entirely outside the range: 0.
+function daysWithinRange(r, rangeStart, rangeEnd) {
+    const start = parseDateOnly(r.start_date);
+    const end = parseDateOnly(r.end_date);
+
+    const from = rangeStart && rangeStart > start ? rangeStart : start;
+    const to = rangeEnd && rangeEnd < end ? rangeEnd : end;
+    if (to < from) return 0;
+
+    const startsInSlice = from.getTime() === start.getTime();
+    const endsInSlice = to.getTime() === end.getTime();
+    if (startsInSlice && endsInSlice) return Number(r.total_days);
+
+    let days = Math.round((to - from) / 86400000) + 1;
+    if (startsInSlice && r.start_half_day !== 'full') days -= 0.5;
+    if (endsInSlice && r.end_half_day !== 'full') days -= 0.5;
+    return days;
+}
+
 function renderStats() {
     const thisYear = new Date().getFullYear();
+    const today = new Date(new Date().toDateString());
     const mine = allRequests.filter(r => r.employee_id === myEmployeeId);
 
-    const myPending = mine.filter(r => r.status === 0).length;
-    const myDaysTakenThisYear = mine
-        .filter(r => r.status === 1 && parseDateOnly(r.start_date).getFullYear() === thisYear)
-        .reduce((sum, r) => sum + Number(r.total_days), 0);
-    const teamPending = allRequests.filter(r => r.employee_id !== myEmployeeId && r.status === 0).length;
-    const myUpcoming = mine.filter(r => r.status === 1 && parseDateOnly(r.end_date) >= new Date(new Date().toDateString())).length;
+    const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    const yearStart = new Date(thisYear, 0, 1);
+
+    const approved = mine.filter(r => r.status === 1);
+    const sumDays = (from, to) => approved.reduce((sum, r) => sum + daysWithinRange(r, from, to), 0);
+
+    const myDaysTakenThisYear = sumDays(yearStart, today);  // Jan 1 → today
+    const myUpcomingDays = sumDays(tomorrow, null);         // tomorrow → any future date, any year
 
     const cards = [
-        { key: 'myPending', label: 'My pending requests', value: myPending, variant: 'warning' },
-        { key: 'myDays', label: `Days taken (${thisYear})`, value: myDaysTakenThisYear, variant: 'accent' },
-        { key: 'myUpcoming', label: 'My upcoming approved leave', value: myUpcoming, variant: 'success' }
+        { label: `Days taken (${thisYear})`, value: myDaysTakenThisYear, variant: 'accent' },
+        { label: 'My upcoming approved leave', value: myUpcomingDays, variant: 'success' }
     ];
-    if (isSupervisor || isAdmin) {
-        cards.push({ key: 'teamPending', label: 'Team requests pending', value: teamPending, variant: 'info' });
-    }
 
     statsGrid.innerHTML = cards.map(c => `
         <div class="stat-card stat-card--${c.variant}">
@@ -635,147 +902,378 @@ function renderStats() {
 }
 
 // ---------------------------------------------------------------------
+// Tab badges — pending counts on the "My leave" and "Team requests"
+// tab titles, plus whether the Team tab is shown at all. Computed once
+// per fetch from the *unfiltered* set: someone's real pending count
+// shouldn't disappear just because the leave type/year/status filters
+// currently hide it.
+// ---------------------------------------------------------------------
+function setPendingPill(pill, count) {
+    pill.textContent = count;
+    pill.classList.toggle('hidden', count === 0);
+}
+
+function updateTabBadges() {
+    let myPending = 0;
+    let teamTotal = 0;
+    let teamPending = 0;
+    for (const r of allRequests) {
+        if (isMineRequest(r)) {
+            if (r.status === 0) myPending++;
+        } else {
+            teamTotal++;
+            if (r.status === 0) teamPending++;
+        }
+    }
+
+    setPendingPill(myRequestsPendingPill, myPending);
+    setPendingPill(teamRequestsPendingPill, teamPending);
+
+    // teamTotal can only be nonzero for a supervisor or an admin (see the
+    // note above renderTeamRequests), so it doubles as the tab's gate.
+    otherLeaveTabItem.classList.toggle('hidden', teamTotal === 0);
+    if (teamTotal === 0 && otherLeaveTab.classList.contains('active')) {
+        // Don't leave the user on a pane whose tab just disappeared.
+        bootstrap.Tab.getOrCreateInstance(myLeaveTab).show();
+    }
+}
+
+// ---------------------------------------------------------------------
+// Row helpers shared by both tables
+// ---------------------------------------------------------------------
+
+// Every row in allRequests belongs to exactly one tab:
+//  - Team requests: someone else's leave that I have authority over —
+//    anyone's if I'm an admin, my direct reports' if I'm their supervisor
+//    — including leave I filed on their behalf (an admin creating leave
+//    for an employee must still be able to find, edit and cancel it).
+//    Rows RLS lets through for any other reason (e.g. an indirect
+//    supervisor relationship) also land here, as before.
+//  - My leave: everything else — my own leave, plus leave I filed for a
+//    teammate I have no authority over (shown read-only; the filer should
+//    still see what they submitted, even though it counts against the
+//    teammate, not them).
+function isTeamRequest(r) {
+    if (r.employee_id === myEmployeeId) return false;
+    if (isAdmin || myReportIds.has(r.employee_id)) return true;
+    return r.requested_by !== myEmployeeId;
+}
+function isMineRequest(r) {
+    return !isTeamRequest(r);
+}
+
+// Row actions. Every row shows a View button; whatever else the current
+// user may do (approve / reject / edit / cancel) is grouped in a "More
+// actions" dropdown, and repeated in the details modal's footer.
+const ACTION_DEFS = {
+    approve:     { label: 'Approve',        attr: 'data-approve',      icon: checkIconSvg,  tone: 'success', btn: 'btn-emerald' },
+    reject:      { label: 'Reject',         attr: 'data-reject',       icon: xIconSvg,      tone: 'danger',  btn: 'btn-rose' },
+    edit:        { label: 'Edit',           attr: 'data-edit',         icon: pencilIconSvg, tone: '',        btn: 'btn-outline-secondary' },
+    cancel:      { label: 'Cancel request', attr: 'data-cancel',       icon: banIconSvg,    tone: 'danger',  btn: 'btn-outline-rose' },
+    adminCancel: { label: 'Cancel request', attr: 'data-admin-cancel', icon: banIconSvg,    tone: 'danger',  btn: 'btn-outline-rose' }
+};
+const REVIEW_ACTIONS = ['approve', 'reject'];
+
+// Which actions the current user gets on a request, in display order.
+//  - "My leave" rows: only my own leave (a request I filed for a teammate
+//    is read-only here). Pending: edit / cancel. Approved / rejected /
+//    cancelled: admin-only edit, plus admin force-cancel unless it's
+//    already cancelled.
+//  - "Team requests" rows: pending gets approve / reject (supervisor or
+//    admin), and edit / cancel for admins only. Once out of pending, the
+//    same admin-only edit / force-cancel applies.
+function getRowActions(r) {
+    const actions = [];
+    const adminPostReview = () => {
+        if (!isAdmin) return;
+        actions.push('edit');
+        if (r.status !== 3) actions.push('adminCancel');
+    };
+
+    if (isMineRequest(r)) {
+        if (r.employee_id !== myEmployeeId) return actions;
+        if (r.status === 0) actions.push('edit', 'cancel');
+        else adminPostReview();
+    } else if (r.status === 0) {
+        actions.push('approve', 'reject');
+        if (isAdmin) actions.push('edit', 'cancel');
+    } else {
+        adminPostReview();
+    }
+    return actions;
+}
+
+function renderActionsCell(r) {
+    const keys = getRowActions(r);
+    const viewBtn = `<button type="button" class="btn-icon-only" title="View details" aria-label="View details" data-view="${r.id}">${eyeIconSvg()}</button>`;
+
+    let menu = '';
+    if (keys.length) {
+        const item = (k) => {
+            const d = ACTION_DEFS[k];
+            return `<li><button type="button" class="dropdown-item${d.tone ? ' is-' + d.tone : ''}" ${d.attr}="${r.id}">${d.icon()}<span>${d.label}</span></button></li>`;
+        };
+        const review = keys.filter(k => REVIEW_ACTIONS.includes(k));
+        const other = keys.filter(k => !REVIEW_ACTIONS.includes(k));
+        menu = `
+            <div class="dropdown row-more">
+                <button type="button" class="btn-icon-only" data-bs-toggle="dropdown" aria-expanded="false" title="More actions" aria-label="More actions">${moreIconSvg()}</button>
+                <ul class="dropdown-menu dropdown-menu-end row-actions-menu">
+                    ${review.map(item).join('')}
+                    ${review.length && other.length ? '<li><hr class="dropdown-divider"></li>' : ''}
+                    ${other.map(item).join('')}
+                </ul>
+            </div>`;
+    }
+    return `<td class="actions-col"><div class="actions-wrap">${viewBtn}${menu}</div></td>`;
+}
+
+// The tables sit inside .table-scroll (overflow-x: auto), which would clip
+// an absolutely-positioned menu on the last rows — so each row's dropdown
+// is created with Popper's "fixed" strategy, which escapes that clipping.
+// Instances are disposed before a re-render so replaced rows don't leak.
+function disposeRowDropdowns(container) {
+    container.querySelectorAll('[data-bs-toggle="dropdown"]').forEach(el => {
+        bootstrap.Dropdown.getInstance(el)?.dispose();
+    });
+}
+function initRowDropdowns(container) {
+    container.querySelectorAll('[data-bs-toggle="dropdown"]').forEach(el => {
+        bootstrap.Dropdown.getOrCreateInstance(el, {
+            popperConfig: (defaults) => ({ ...defaults, strategy: 'fixed' })
+        });
+    });
+}
+
+const ROW_ACTIONS = {
+    view: (id) => openLeaveDetail(id),
+    edit: (id) => openLeaveRequestModal(id),
+    cancel: (id) => onCancelRequest(id),
+    adminCancel: (id) => onAdminCancelRequest(id),
+    approve: (id) => onReviewRequest(id, 'approved'),
+    reject: (id) => onReviewRequest(id, 'rejected')
+};
+const ROW_ACTION_SELECTOR = '[data-view], [data-edit], [data-cancel], [data-admin-cancel], [data-approve], [data-reject]';
+
+function dispatchRowAction(btn) {
+    for (const [key, handler] of Object.entries(ROW_ACTIONS)) {
+        if (key in btn.dataset) {
+            handler(btn.dataset[key]);
+            return;
+        }
+    }
+}
+
+// Delegated click handler for both tables: action buttons / dropdown items,
+// or a click anywhere else on a request row (outside the Action cell) to
+// open its details.
+function onRowActionClick(e) {
+    const btn = e.target.closest(ROW_ACTION_SELECTOR);
+    if (btn && e.currentTarget.contains(btn)) {
+        dispatchRowAction(btn);
+        return;
+    }
+    if (e.target.closest('.actions-col')) return;
+    const row = e.target.closest('tr[data-request-id]');
+    if (row && e.currentTarget.contains(row)) openLeaveDetail(row.dataset.requestId);
+}
+
+// ---------------------------------------------------------------------
+// Compact cells shared by both tables
+// ---------------------------------------------------------------------
+function renderStatusCell(r) {
+    const sub = statusSubText(r);
+    return `<td class="status-cell">
+        <span class="status-badge ${STATUS_CLASS[r.status]}">${STATUS_LABEL[r.status]}</span>
+        ${sub ? `<span class="row-sub" title="${escapeHtml(sub)}">${escapeHtml(sub)}</span>` : ''}
+    </td>`;
+}
+
+// One-line, ellipsis-truncated; the full text is in the tooltip and the
+// details view.
+function renderReasonCell(r) {
+    return r.reason
+        ? `<td class="reason-col" title="${escapeHtml(r.reason)}">${escapeHtml(r.reason)}</td>`
+        : `<td class="reason-col"><span class="text-faint">—</span></td>`;
+}
+
+// Name on the first line, employee ID underneath.
+function renderEmployeeCell(rel) {
+    const name = embedded(rel, 'name');
+    const empId = embedded(rel, 'employee_id');
+    if (!name) return escapeHtml(empId || '—');
+    return `${escapeHtml(name)}${empId ? `<span class="row-sub">${escapeHtml(empId)}</span>` : ''}`;
+}
+
+// ---------------------------------------------------------------------
 // My requests tab
 // ---------------------------------------------------------------------
 function renderMyRequests() {
-    const mineTotal = allRequests.filter(r => r.employee_id === myEmployeeId);
-    const mine = filteredRequests.filter(r => r.employee_id === myEmployeeId);
+    disposeRowDropdowns(myRequestsBody);
+    const mine = filteredRequests.filter(isMineRequest);
 
     if (mine.length === 0) {
-        const msg = mineTotal.length === 0
-            ? 'No leave requests yet — click "New request" to submit one.'
-            : 'No requests match the current filters.';
+        const msg = allRequests.some(isMineRequest)
+            ? 'No requests match the current filters.'
+            : 'No leave requests yet — click "New request" to submit one.';
         myRequestsBody.innerHTML = `<tr><td colspan="6"><div class="empty-state">${msg}</div></td></tr>`;
         return;
     }
 
-    myRequestsBody.innerHTML = mine.map(r => `
-        <tr>
-            <td>${escapeHtml(embedded(r.leave_type, 'leave_type'))}</td>
-            <td>${renderDateRange(r)}</td>
-            <td>${r.total_days}</td>
+    myRequestsBody.innerHTML = mine.map(r => {
+        // Filed by me, but for a teammate: read-only here (it's not my
+        // leave to edit/cancel) — see getRowActions().
+        const filedForSomeoneElse = r.employee_id !== myEmployeeId;
+        const forName = embedded(r.employee, 'name') || formatEmployeeName(r.employee);
+        return `
+        <tr data-request-id="${r.id}">
             <td>
-                <span class="status-badge ${STATUS_CLASS[r.status]}">${STATUS_LABEL[r.status]}</span>
-                ${r.status === 2 && r.rejection_reason ? `<span class="rejection-note">${escapeHtml(r.rejection_reason)}</span>` : ''}
+                ${escapeHtml(embedded(r.leave_type, 'leave_type'))}
+                ${filedForSomeoneElse ? `<span class="row-sub">For ${escapeHtml(forName)}</span>` : ''}
             </td>
-            <td class="reason-col">${escapeHtml(r.reason || '—')}</td>
-            <td class="actions-col">
-                ${r.status === 0 ? `
-                    <button type="button" class="btn-icon-only" title="Edit" data-edit="${r.id}">${pencilIconSvg()}</button>
-                    <button type="button" class="btn-icon-only" title="Cancel" data-cancel="${r.id}">${banIconSvg()}</button>
-                ` : ''}
-                ${isAdmin && r.status !== 0 ? `
-                    <button type="button" class="btn-icon-only" title="Edit" data-edit="${r.id}">${pencilIconSvg()}</button>
-                    ${r.status !== 3 ? `<button type="button" class="btn-icon-only" title="Cancel" data-admin-cancel="${r.id}">${banIconSvg()}</button>` : ''}
-                ` : ''}
-            </td>
+            <td>${renderDateRange(r)}</td>
+            <td class="days-col">${r.total_days}</td>
+            ${renderStatusCell(r)}
+            ${renderReasonCell(r)}
+            ${renderActionsCell(r)}
         </tr>
-    `).join('');
-
-    myRequestsBody.querySelectorAll('[data-edit]').forEach(btn => {
-        btn.addEventListener('click', () => openLeaveRequestModal(btn.dataset.edit));
-    });
-    myRequestsBody.querySelectorAll('[data-cancel]').forEach(btn => {
-        btn.addEventListener('click', () => onCancelRequest(btn.dataset.cancel));
-    });
-    myRequestsBody.querySelectorAll('[data-admin-cancel]').forEach(btn => {
-        btn.addEventListener('click', () => onAdminCancelRequest(btn.dataset.adminCancel));
-    });
+        `;
+    }).join('');
+    initRowDropdowns(myRequestsBody);
 }
 
 // ---------------------------------------------------------------------
-// Other leave requests tab (only rows RLS lets me see beyond my own —
-// i.e. I'm the requester's direct supervisor, or I'm an admin).
-// While a row is PENDING: Approve/Reject, Edit and Cancel are all
-// available, regardless of whether I'm a supervisor or an admin. Once
-// it's approved or rejected, only an admin can still Edit/Cancel it —
-// a supervisor gets no actions on it at all.
+// "Team requests" tab — requests I can actually act on as a
+// supervisor or admin (see isTeamRequest() for the exact split). Rows I
+// only see because I filed them for a teammate I have no authority over
+// (requested_by = me) show read-only in "My leave" instead. Since
+// leave_requests_select only lets someone else's employee_id through
+// via is_supervisor_of() or is_admin() (aside from requested_by = me),
+// this set can only be nonzero for a supervisor or an admin — which is
+// why the tab's visibility (updateTabBadges()) can safely hinge on it
+// being non-empty.
+// Which actions each row offers is decided in getRowActions().
 // ---------------------------------------------------------------------
 function renderTeamRequests() {
-    const teamTotal = allRequests.filter(r => r.employee_id !== myEmployeeId);
-
-    // Tab visibility and the pending pill reflect the *unfiltered* team
-    // set — someone's real pending count shouldn't disappear just
-    // because the leave type/year/status filters currently hide it.
-    if (teamTotal.length === 0) {
-        otherLeaveTabItem.classList.add('hidden');
-        return;
-    }
-    otherLeaveTabItem.classList.remove('hidden');
-
-    const pendingCount = teamTotal.filter(r => r.status === 0).length;
-    if (pendingCount > 0) {
-        teamRequestsPendingPill.textContent = pendingCount;
-        teamRequestsPendingPill.classList.remove('hidden');
-    } else {
-        teamRequestsPendingPill.classList.add('hidden');
-    }
-
-    const team = filteredRequests.filter(r => r.employee_id !== myEmployeeId);
+    disposeRowDropdowns(teamRequestsBody);
+    const team = filteredRequests.filter(r => !isMineRequest(r));
     if (team.length === 0) {
         teamRequestsBody.innerHTML = `<tr><td colspan="7"><div class="empty-state">No requests match the current filters.</div></td></tr>`;
         return;
     }
 
     teamRequestsBody.innerHTML = team.map(r => `
-        <tr>
-            <td class="employee-col">${escapeHtml(embedded(r.employee, 'name'))}</td>
+        <tr data-request-id="${r.id}">
+            <td class="employee-col">${renderEmployeeCell(r.employee)}</td>
             <td>${escapeHtml(embedded(r.leave_type, 'leave_type'))}</td>
             <td>${renderDateRange(r)}</td>
-            <td>${r.total_days}</td>
-            <td>
-                <span class="status-badge ${STATUS_CLASS[r.status]}">${STATUS_LABEL[r.status]}</span>
-                ${r.status !== 0 && embedded(r.approver, 'name') ? `<div class="half-day-tag">by ${escapeHtml(embedded(r.approver, 'name'))}</div>` : ''}
-            </td>
-            <td class="reason-col">${escapeHtml(r.reason || '—')}</td>
-            <td class="actions-col">
-                ${r.status === 0 ? `
-                    <button type="button" class="btn-icon-only" title="Approve" data-approve="${r.id}">${checkIconSvg()}</button>
-                    <button type="button" class="btn-icon-only" title="Reject" data-reject="${r.id}">${xIconSvg()}</button>
-                    <button type="button" class="btn-icon-only" title="Edit" data-edit="${r.id}">${pencilIconSvg()}</button>
-                    <button type="button" class="btn-icon-only" title="Cancel" data-cancel="${r.id}">${banIconSvg()}</button>
-                ` : ''}
-                ${isAdmin && r.status !== 0 ? `
-                    <button type="button" class="btn-icon-only" title="Edit" data-edit="${r.id}">${pencilIconSvg()}</button>
-                    ${r.status !== 3 ? `<button type="button" class="btn-icon-only" title="Cancel" data-admin-cancel="${r.id}">${banIconSvg()}</button>` : ''}
-                ` : ''}
-            </td>
+            <td class="days-col">${r.total_days}</td>
+            ${renderStatusCell(r)}
+            ${renderReasonCell(r)}
+            ${renderActionsCell(r)}
         </tr>
     `).join('');
-
-    teamRequestsBody.querySelectorAll('[data-approve]').forEach(btn => {
-        btn.addEventListener('click', () => onReviewRequest(btn.dataset.approve, 'approved'));
-    });
-    teamRequestsBody.querySelectorAll('[data-reject]').forEach(btn => {
-        btn.addEventListener('click', () => onReviewRequest(btn.dataset.reject, 'rejected'));
-    });
-    teamRequestsBody.querySelectorAll('[data-edit]').forEach(btn => {
-        btn.addEventListener('click', () => openLeaveRequestModal(btn.dataset.edit));
-    });
-    teamRequestsBody.querySelectorAll('[data-cancel]').forEach(btn => {
-        btn.addEventListener('click', () => onCancelRequest(btn.dataset.cancel));
-    });
-    teamRequestsBody.querySelectorAll('[data-admin-cancel]').forEach(btn => {
-        btn.addEventListener('click', () => onAdminCancelRequest(btn.dataset.adminCancel));
-    });
+    initRowDropdowns(teamRequestsBody);
 }
 
+// Compact range for the table: "Oct 3, 2026", "Oct 3 – 7, 2026" (same
+// month), "Oct 30 – Nov 2, 2026" (same year), or both dates in full when
+// the year changes. A half-day start/end gets a small (AM)/(PM) tag.
 function renderDateRange(r) {
-    const start = formatDateShort(r.start_date);
-    const startHalf = r.start_half_day !== 'full' ? ` <span class="half-day-tag">(${HALF_DAY_LABEL[r.start_half_day]})</span>` : '';
-    if (r.start_date === r.end_date) {
-        return `${start}${startHalf}`;
+    const s = parseDateOnly(r.start_date);
+    const e = parseDateOnly(r.end_date);
+    if (!s || !e || isNaN(s) || isNaN(e)) return '—';
+
+    const half = (v) => v !== 'full' ? ` <span class="half-day-tag">(${HALF_DAY_LABEL[v]})</span>` : '';
+    const md  = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const mdy = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+    if (r.start_date === r.end_date) return `${mdy(s)}${half(r.start_half_day)}`;
+
+    if (s.getFullYear() !== e.getFullYear()) {
+        return `${mdy(s)}${half(r.start_half_day)} – ${mdy(e)}${half(r.end_half_day)}`;
     }
-    const end = formatDateShort(r.end_date);
-    const endHalf = r.end_half_day !== 'full' ? ` <span class="half-day-tag">(${HALF_DAY_LABEL[r.end_half_day]})</span>` : '';
-    return `${start}${startHalf} – ${end}${endHalf}`;
+    const sameMonth = s.getMonth() === e.getMonth();
+    const endPart = sameMonth ? `${e.getDate()}, ${e.getFullYear()}` : mdy(e);
+    return `${md(s)}${half(r.start_half_day)} – ${endPart}${half(r.end_half_day)}`;
+}
+
+// ---------------------------------------------------------------------
+// Leave details modal — everything the compact row leaves out: the full
+// reason, exact dates, who reviewed it and when, and the approver's
+// comment / rejection reason. Its footer repeats whatever actions the
+// current user has on this request (see getRowActions()).
+// ---------------------------------------------------------------------
+function detailRow(label, valueHtml) {
+    if (!valueHtml) return '';
+    return `<div class="detail-row"><dt>${label}</dt><dd>${valueHtml}</dd></div>`;
+}
+
+function openLeaveDetail(requestId) {
+    const r = allRequests.find(x => x.id === requestId);
+    if (!r) return;
+
+    leaveDetailStatus.className = `status-badge ${STATUS_CLASS[r.status]}`;
+    leaveDetailStatus.textContent = STATUS_LABEL[r.status];
+
+    const dateLine = (date, half) =>
+        `${escapeHtml(formatDateLong(date))} <span class="half-day-tag">· ${HALF_DAY_LABEL[half] || 'Full day'}</span>`;
+    const days = Number(r.total_days);
+
+    // Group 1 — the request itself
+    const requestRows = [
+        detailRow('Employee', escapeHtml(formatEmployeeName(r.employee))),
+        detailRow('Leave type', escapeHtml(embedded(r.leave_type, 'leave_type') || '—')),
+        r.start_date === r.end_date
+            ? detailRow('Date', dateLine(r.start_date, r.start_half_day))
+            : detailRow('From', dateLine(r.start_date, r.start_half_day)) + detailRow('To', dateLine(r.end_date, r.end_half_day)),
+        detailRow('Total', `<strong>${days}</strong> ${days <= 1 ? 'day' : 'days'}`),
+        detailRow('Reason', r.reason
+            ? `<div class="detail-text">${escapeHtml(r.reason)}</div>`
+            : '<span class="text-faint">No reason provided</span>')
+    ];
+
+    // Group 2 — the review outcome
+    const reviewRows = [];
+    if (r.status === 0) {
+        reviewRows.push(detailRow('Awaiting', escapeHtml(pendingApproverName(r, true))));
+    } else if (r.status === 1 || r.status === 2) {
+        const word = r.status === 1 ? 'Approved' : 'Rejected';
+        reviewRows.push(detailRow(`${word} by`, escapeHtml(embedded(r.approver, 'name'))));
+        reviewRows.push(detailRow(`${word} on`, escapeHtml(formatDateTime(r.approved_at))));
+        if (r.status === 1 && r.review_comment) {
+            reviewRows.push(detailRow('Comment', `<div class="detail-text detail-note is-approved">${escapeHtml(r.review_comment)}</div>`));
+        }
+        if (r.status === 2 && r.rejection_reason) {
+            reviewRows.push(detailRow('Rejection reason', `<div class="detail-text detail-note is-rejected">${escapeHtml(r.rejection_reason)}</div>`));
+        }
+    }
+
+    // Group 3 — bookkeeping
+    const metaRows = [
+        detailRow('Submitted', escapeHtml(formatDateTime(r.created_at))),
+        detailRow('Filed by', r.requested_by === myEmployeeId && r.employee_id !== myEmployeeId ? 'You, on their behalf' : '')
+    ];
+
+    leaveDetailBody.innerHTML = [requestRows, reviewRows, metaRows]
+        .map(rows => rows.join(''))
+        .filter(html => html.trim())
+        .map(html => `<dl class="detail-list">${html}</dl>`)
+        .join('');
+
+    leaveDetailActions.innerHTML = getRowActions(r).map(k => {
+        const d = ACTION_DEFS[k];
+        return `<button type="button" class="btn btn-sm ${d.btn}" ${d.attr}="${r.id}">${d.icon()}<span>${d.label}</span></button>`;
+    }).join('');
+
+    leaveDetailModal.show();
 }
 
 // ---------------------------------------------------------------------
 // New / edit request modal
 // ---------------------------------------------------------------------
-// Pass a request id (admin-only, from the "Other leave requests" tab) to
-// open in edit mode instead of creating a new request.
+// Pass a request id (from a row's Edit button) to open in edit mode
+// instead of creating a new request.
 function openLeaveRequestModal(requestId = null) {
     leaveRequestForm.reset();
     editingRequestId = requestId;
@@ -784,13 +1282,13 @@ function openLeaveRequestModal(requestId = null) {
         const req = allRequests.find(r => r.id === requestId);
         if (!req) return;
 
+        populateLeaveTypeSelect(req.leave_type_id);
         leaveRequestModalTitle.textContent = 'Edit leave request';
         leaveRequestSubmitBtn.textContent = 'Save changes';
 
         onBehalfOfField.classList.add('hidden');
         editingForBanner.classList.remove('hidden');
-        editingForText.textContent =
-            `Editing request for ${embedded(req.employee, 'name')} (${embedded(req.employee, 'employee_id')})`;
+        editingForText.textContent = `Editing request for ${formatEmployeeName(req.employee)}`;
 
         leaveTypeInput.value = String(req.leave_type_id);
         startDateInput.value = req.start_date;
@@ -800,6 +1298,7 @@ function openLeaveRequestModal(requestId = null) {
         reasonInput.value = req.reason || '';
         updateDaysPreview();
     } else {
+        populateLeaveTypeSelect();
         leaveRequestModalTitle.textContent = 'New leave request';
         leaveRequestSubmitBtn.textContent = 'Submit request';
 
@@ -881,8 +1380,14 @@ async function onSubmitLeaveRequest(e) {
         };
 
         leaveRequestSubmitBtn.disabled = true;
-        const { error } = await sb.from('leave_requests').update(payload).eq('id', editingRequestId);
-        leaveRequestSubmitBtn.disabled = false;
+        let error;
+        try {
+            ({ error } = await sb.from('leave_requests').update(payload).eq('id', editingRequestId));
+        } catch (err) {
+            error = err; // network-level failure: surface it through the same toast path
+        } finally {
+            leaveRequestSubmitBtn.disabled = false;
+        }
 
         if (error) {
             if (error.code === '23P01') {
@@ -922,8 +1427,14 @@ async function onSubmitLeaveRequest(e) {
     };
 
     leaveRequestSubmitBtn.disabled = true;
-    const { error } = await sb.from('leave_requests').insert(payload);
-    leaveRequestSubmitBtn.disabled = false;
+    let error;
+    try {
+        ({ error } = await sb.from('leave_requests').insert(payload));
+    } catch (err) {
+        error = err;
+    } finally {
+        leaveRequestSubmitBtn.disabled = false;
+    }
 
     if (error) {
         if (error.code === '23P01') {
@@ -990,8 +1501,11 @@ async function onAdminCancelRequest(requestId) {
     await loadRequests();
 }
 
+// Approve: optional comment for the employee (saved separately, see below).
+// Reject: a reason is required — it's the rejection comment the employee sees.
 async function onReviewRequest(requestId, decision) {
     let rejectionReason = null;
+    let approvalComment = null;
 
     if (decision === 'rejected') {
         rejectionReason = await promptTextDialog({
@@ -1002,12 +1516,17 @@ async function onReviewRequest(requestId, decision) {
         });
         if (rejectionReason === null) return; // cancelled
     } else {
-        const confirmed = await showConfirmDialog({
+        const comment = await promptTextDialog({
             title: 'Approve this request?',
-            message: 'The employee will be notified that their leave is approved.',
-            confirmLabel: 'Approve'
+            message: 'The employee will be notified that their leave is approved. You can add an optional comment for them.',
+            confirmLabel: 'Approve',
+            placeholder: 'Optional comment, e.g. Enjoy your trip',
+            required: false,
+            danger: false,
+            maxLength: 500
         });
-        if (!confirmed) return;
+        if (comment === null) return; // cancelled
+        approvalComment = comment || null;
     }
 
     const { error } = await sb.rpc('review_leave_request', {
@@ -1020,6 +1539,25 @@ async function onReviewRequest(requestId, decision) {
         return;
     }
     showToast(decision === 'approved' ? 'Request approved.' : 'Request rejected.', 'success');
+
+    // The review itself is already done and unchanged; the comment is a
+    // second, separate call (see supabase/04_leave_review_comment.sql), so
+    // a failure here never undoes or blocks the approval.
+    if (approvalComment) {
+        let commentError = null;
+        try {
+            ({ error: commentError } = await sb.rpc('set_leave_review_comment', {
+                p_request_id: requestId,
+                p_comment: approvalComment
+            }));
+        } catch (err) {
+            commentError = err;
+        }
+        if (commentError) {
+            console.error('leaves: could not save approval comment:', commentError);
+            showToast('The request was approved, but the comment could not be saved: ' + commentError.message, 'danger');
+        }
+    }
     await loadRequests();
 }
 
@@ -1061,8 +1599,14 @@ async function onAddLeaveType() {
     if (!name) { showToast('Enter a name for the new leave type.', 'danger'); return; }
 
     addLeaveTypeBtn.disabled = true;
-    const { error } = await sb.from('leave_types').insert({ leave_type: name });
-    addLeaveTypeBtn.disabled = false;
+    let error;
+    try {
+        ({ error } = await sb.from('leave_types').insert({ leave_type: name }));
+    } catch (err) {
+        error = err;
+    } finally {
+        addLeaveTypeBtn.disabled = false;
+    }
 
     if (error) {
         if (error.code === '23505') {

@@ -81,6 +81,15 @@
 
   const isAdmin = employee?.role === 1;
 
+  // Non-admins only have access to the leaves page — every other /pages/
+  // screen (dashboard, employees, ...) is admin-only. Bounce them there
+  // instead of letting them land on (or stay on) a page they can't use.
+  const activePageForGate = document.body.dataset.page;
+  if (!isAdmin && activePageForGate !== 'leaves') {
+    window.location.href = 'leaves.html';
+    return;
+  }
+
   if (isAdmin && toggleBtn && appShell && sidebarRoot) {
     try {
       const res = await fetch(SIDEBAR_PARTIAL_PATH);
@@ -121,10 +130,31 @@
     toggleBtn.addEventListener('click', () => {
       setOpen(!appShell.classList.contains('sidebar-open'));
     });
-  } else if (toggleBtn) {
+  } else {
     // Not an admin (or no linked employee profile yet): no sidebar for
-    // this role yet, so there's nothing to toggle.
-    toggleBtn.style.display = 'none';
+    // this role yet, so there's nothing to toggle...
+    if (toggleBtn) toggleBtn.style.display = 'none';
+
+    // ...but they still need a way to sign out, since the sidebar's
+    // footer sign-out button never gets rendered for them. Add a plain
+    // logout button to the top-right of the topbar instead.
+    const topbar = document.querySelector('.page-topbar');
+    if (topbar) {
+      const logoutBtn = document.createElement('button');
+      logoutBtn.type = 'button';
+      logoutBtn.id = 'topbarSignOutBtn';
+      logoutBtn.className = 'btn btn-ghost btn-sm btn-icon';
+      logoutBtn.style.marginLeft = 'auto';
+      logoutBtn.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+        Log out
+      `;
+      logoutBtn.addEventListener('click', async () => {
+        await sb.auth.signOut();
+        window.location.href = LOGIN_PATH;
+      });
+      topbar.appendChild(logoutBtn);
+    }
   }
 
   notifyReady(session, employee, employeeError);

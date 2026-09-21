@@ -29,10 +29,10 @@
 }
 
 /* ---------------------------------------------------------------- */
-/* "My leave" / "Other leave requests" tabs — plain Bootstrap nav-tabs
+/* "My leave" / "Team requests" tabs — plain Bootstrap nav-tabs
    (same component #lookupModal already uses), restyled to sit flush
    with the page instead of Bootstrap's boxed default. The second tab
-   starts hidden and is only revealed once renderTeamRequests() in
+   starts hidden and is only revealed once updateTabBadges() in
    leaves.js confirms there's anything in it.
 
    The tabs live inside #leavesTabsCard's .table-toolbar alongside the
@@ -82,40 +82,97 @@
   background: var(--accent-soft);
 }
 #filterYearInput,
-#filterStatusInput {
+#filterStatusInput,
+#filterEmployeeInput {
   font-size: 0.8rem;
+}
+#filterEmployeeInput {
+  max-width: 240px; /* long "Name (ID)" labels shouldn't stretch the filter row */
 }
 
 /* ---------------------------------------------------------------- */
-/* Requests tables                                                   */
+/* Requests tables — compact rows. Each row shows only the essentials
+   (leave type, dates, days, status + approver, a one-line reason) and a
+   small Action cell: a View button plus a "More actions" dropdown.
+   Everything else (full reason, comments, timestamps) is in the details
+   modal further down.                                               */
 /* ---------------------------------------------------------------- */
+#myRequestsTable,
+#teamRequestsTable {
+  font-size: 0.84rem;
+}
+#myRequestsTable thead th,
+#teamRequestsTable thead th {
+  font-size: 0.72rem;
+  padding: 8px 12px;
+}
+#myRequestsTable tbody td,
+#teamRequestsTable tbody td {
+  padding: 7px 12px;
+  line-height: 1.25;
+}
+#myRequestsTable tbody tr[data-request-id],
+#teamRequestsTable tbody tr[data-request-id] {
+  cursor: pointer; /* clicking a row opens its details */
+}
+#myRequestsTable .days-col,
+#teamRequestsTable .days-col {
+  width: 56px;
+  text-align: center;
+}
+#myRequestsTable tbody .days-col,
+#teamRequestsTable tbody .days-col {
+  font-family: var(--font-display);
+  font-weight: 600;
+}
 #myRequestsTable .reason-col,
 #teamRequestsTable .reason-col {
-  max-width: 220px;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--ink-soft);
 }
 #myRequestsTable .actions-col,
 #teamRequestsTable .actions-col {
-  width: 150px;
+  width: 76px;
   white-space: nowrap;
+  cursor: default;
 }
 #teamRequestsTable .employee-col {
-  width: 170px;
+  width: 150px;
+}
+#myRequestsTable .status-badge,
+#teamRequestsTable .status-badge {
+  font-size: 0.72rem;
+  padding: 2px 8px;
 }
 .half-day-tag {
   color: var(--ink-faint);
   font-size: 0.78rem;
   font-weight: 500;
 }
-.rejection-note {
+.text-faint {
+  color: var(--ink-faint);
+}
+/* Small secondary line under a cell's main text: the employee ID, "For
+   <name>", or the approver under a status badge. Truncates instead of
+   widening the column. */
+.row-sub {
   display: block;
-  color: var(--danger);
-  font-size: 0.78rem;
   margin-top: 2px;
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  color: var(--ink-faint);
 }
 
+/* Pending-request count shown to the right of a tab title ("My leave"
+   and "Team requests"). Spacing from the label comes from the tab's own
+   `gap` in .leaves-tabs .nav-link above; leaves.js hides the pill with
+   .hidden when the count is zero. */
 .pending-count-pill {
   display: inline-flex;
   align-items: center;
@@ -128,6 +185,150 @@
   color: var(--warning);
   font-size: 0.72rem;
   font-weight: 700;
+}
+
+/* ---------------------------------------------------------------- */
+/* "More actions" dropdown in each row's Action cell. Review decisions
+   (Approve / Reject) sit above a divider, then Edit / Cancel.       */
+/* ---------------------------------------------------------------- */
+.row-more .btn-icon-only.show {
+  background: var(--bg);
+  color: var(--ink);
+}
+.row-actions-menu {
+  min-width: 170px;
+  padding: 4px;
+  font-size: 0.84rem;
+  border-color: var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 6px 20px rgba(27, 36, 48, 0.12);
+}
+.row-actions-menu .dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 4px;
+  color: var(--ink-soft);
+  font-weight: 500;
+}
+.row-actions-menu .dropdown-item:hover,
+.row-actions-menu .dropdown-item:focus,
+.row-actions-menu .dropdown-item:active {
+  background: var(--bg);
+  color: var(--ink);
+}
+.row-actions-menu .dropdown-item.is-success {
+  color: var(--success);
+}
+.row-actions-menu .dropdown-item.is-success:hover,
+.row-actions-menu .dropdown-item.is-success:focus,
+.row-actions-menu .dropdown-item.is-success:active {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.row-actions-menu .dropdown-item.is-danger {
+  color: var(--danger);
+}
+.row-actions-menu .dropdown-item.is-danger:hover,
+.row-actions-menu .dropdown-item.is-danger:focus,
+.row-actions-menu .dropdown-item.is-danger:active {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.row-actions-menu .dropdown-divider {
+  margin: 4px 0;
+  border-color: var(--border);
+}
+
+/* ---------------------------------------------------------------- */
+/* Leave details modal                                               */
+/* ---------------------------------------------------------------- */
+#leaveDetailModal .modal-dialog {
+  max-width: 480px;
+}
+#leaveDetailModal .modal-header {
+  align-items: center;
+}
+.detail-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+#leaveDetailModal .modal-body {
+  padding: 2px 20px;
+}
+#leaveDetailModal .modal-footer {
+  justify-content: space-between;
+  gap: 8px;
+}
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.detail-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.detail-actions .btn svg {
+  width: 14px;
+  height: 14px;
+}
+.btn-outline-rose {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+.btn-outline-rose:hover,
+.btn-outline-rose:focus {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+/* One <dl> per group (request / review / bookkeeping), separated by a rule. */
+.detail-list {
+  margin: 0;
+  padding: 12px 0;
+}
+.detail-list + .detail-list {
+  border-top: 1px solid var(--border);
+}
+.detail-row {
+  display: grid;
+  grid-template-columns: 112px 1fr;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 0.85rem;
+}
+.detail-row dt {
+  margin: 0;
+  color: var(--ink-faint);
+  font-weight: 500;
+}
+.detail-row dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.detail-row dd strong {
+  font-family: var(--font-display);
+}
+.detail-text {
+  white-space: pre-wrap;
+}
+.detail-note {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+}
+.detail-note.is-approved {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.detail-note.is-rejected {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 /* ---------------------------------------------------------------- */
@@ -163,11 +364,6 @@
   font-size: 0.85rem;
   font-weight: 600;
 }
-.half-day-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
 #daysPreview {
   font-size: 0.82rem;
   color: var(--ink-soft);
@@ -191,12 +387,4 @@
 }
 #newLeaveTypeRow .form-control {
   flex: 1 1 auto;
-}
-
-/* ---------------------------------------------------------------- */
-/* Empty-state nudge on the review card when there's nothing pending */
-/* ---------------------------------------------------------------- */
-.review-empty-note {
-  color: var(--ink-faint);
-  font-size: 0.85rem;
 }

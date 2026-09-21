@@ -2,19 +2,38 @@
 -- Employee Leave Management System — Leave Request Schema
 -- Target: Supabase (PostgreSQL), public schema
 --
+-- SINGLE SOURCE OF TRUTH for everything leave-related. This file now
+-- includes what used to live in the separate follow-up scripts:
+--   * 04_leave_review_comment.sql   (review_comment + set_leave_review_comment)
+--   * 05_leave_approver_names.sql   (list_leave_approvers)
+-- Those two files are fully superseded — do NOT run them separately.
+--
 -- Depends on 01_employee_info_schema.sql having already run:
 --   public.employees, public.is_admin(), public.current_employee_uuid(),
 --   public.track_audit_columns(), and the default-privileges grants are
 --   all reused here, not redefined. This file only adds new objects.
 --
+-- Fresh setup:  run 01, then this file. Nothing else is needed.
+-- Existing DB:  just re-run this file. It upgrades in place (adds
+--   leave_requests.review_comment if missing, replaces the functions).
+--
 -- Re-running this script: fully idempotent, same conventions as file 01
 -- (IF NOT EXISTS / CREATE OR REPLACE / DROP...IF EXISTS + CREATE, seed
--- data via ON CONFLICT DO NOTHING).
+-- data via ON CONFLICT DO NOTHING). No destructive operations on data.
+--
+-- Identity note: every function here resolves "the caller" through
+-- public.current_employee_uuid() and admin-ness through public.is_admin()
+-- (both from file 01). The old 04/05 scripts re-derived these via
+-- employees.auth_user_id / employees.role = 1; that logic is now
+-- centralised so there is one definition of "me" and "admin".
 --
 -- Approval model:
---   - A regular employee can only ever insert a request for themselves
---     (enforced by both RLS and a BEFORE INSERT trigger — defense in
---     depth). It always starts life as 'pending'.
+--   - A regular employee can insert a request for themselves, or for an
+--     eligible teammate (same department, not their own supervisor —
+--     see can_request_leave_for() / list_my_leave_delegates() below).
+--     Enforced by both RLS and a BEFORE INSERT trigger — defense in
+--     depth. Either way it always starts life as 'pending': filing for
+--     a teammate never skips their normal approval step.
 --   - An admin inserting a request on behalf of a DIFFERENT employee is
 --     auto-approved on creation (no further action needed), per the
 --     "Admin can create leave for any employee without needing further
@@ -33,7 +52,35 @@
 --     policies because "only pending requests can transition" and
 --     "stamp approver + timestamp together" are business rules RLS
 --     can't express cleanly (RLS filters rows, not columns/transitions).
---     Plain RLS still covers full admin read/write access below.
+--     Status transitions always go through those RPCs — never a plain
+--     update — even for the requester's own row.
+--   - Approval comment: when APPROVING, the reviewer may attach an
+--     optional comment (leave_requests.review_comment, max 500 chars).
+--     Rejections keep using rejection_reason (required by
+--     leave_requests_rejection_reason_check). The approval itself goes
+--     through review_leave_request() exactly as before; the page then
+--     makes a second call to set_leave_review_comment() to save the
+--     comment. Only the person who approved a request can set/clear its
+--     comment. review_comment is wiped on insert and on every review, so
+--     it can never carry text an employee typed into their own pending
+--     row (a plain self-update of a pending row could otherwise
+--     pre-fill it and make it look like the approver wrote it).
+--   - Editing the *details* (type/dates/reason) of your own still-
+--     pending request, without touching its status, is a plain table
+--     update covered by leave_requests_self_update below: the row has
+--     to already be yours and pending (using), and has to still be
+--     yours and pending afterwards (with check) — so it can't be used
+--     to sneak in a status/employee_id change. Admin has full write
+--     access via leave_requests_admin_update regardless of status.
+--   - A request always belongs to (counts against) employee_id, the
+--     person it's leave FOR — not requested_by, whoever filed it. Both
+--     of them can see the row (leave_requests_select below), but any
+--     balance/entitlement accounting done elsewhere should always group
+--     by employee_id, and only once status = 1 (approved).
+--   - "Awaiting <supervisor name (ID)>": regular users can't read other
+--     employees' rows, so list_leave_approvers() (SECURITY DEFINER)
+--     returns just the supervisor's name + employee ID, and only for
+--     people whose leave the caller can already see (see the function).
 --
 -- Half-day model:
 --   - start_half_day / end_half_day are each 'full', 'am', or 'pm'.
@@ -105,6 +152,7 @@ create table if not exists public.leave_requests (
     approved_by         uuid references public.employees (id),
     approved_at         timestamptz,
     rejection_reason    text,
+    review_comment      text, -- optional approver comment on an APPROVED request; set via set_leave_review_comment()
     modified_by         uuid references public.employees (id),
     last_modified       timestamptz not null default now(),
     created_at          timestamptz not null default now(),
@@ -118,6 +166,18 @@ create table if not exists public.leave_requests (
         status <> 2 or rejection_reason is not null -- a rejection must say why
     )
 );
+
+-- Upgrade path for databases whose leave_requests table predates
+-- review_comment (CREATE TABLE IF NOT EXISTS above won't add columns to
+-- an existing table). No-ops on a fresh install.
+alter table public.leave_requests
+    add column if not exists review_comment text;
+
+alter table public.leave_requests
+    drop constraint if exists leave_requests_review_comment_len_check;
+alter table public.leave_requests
+    add constraint leave_requests_review_comment_len_check
+    check (review_comment is null or char_length(review_comment) <= 500);
 
 create index if not exists idx_leave_requests_employee_id    on public.leave_requests (employee_id);
 create index if not exists idx_leave_requests_leave_type_id  on public.leave_requests (leave_type_id);
@@ -152,6 +212,146 @@ $$;
 
 
 -- ---------------------------------------------------------------------
+-- Helper: can the current (non-admin) user file a leave request on
+-- behalf of p_employee_id? Rule: same department, not themselves
+-- (that's just a normal self-request), and not their own supervisor
+-- (filing "for" the person who approves you defeats the point of
+-- approval). Active employees only (last_day is null).
+--
+-- Used both server-side (trigger + insert RLS, below) and by
+-- list_my_leave_delegates() to build the picker leaves.js shows in
+-- the "Requesting for" field — kept as the single source of truth so
+-- the two can't drift apart.
+-- ---------------------------------------------------------------------
+create or replace function public.can_request_leave_for(p_employee_id uuid)
+returns boolean
+language sql
+security definer
+stable
+set search_path = ''
+as $$
+    select exists (
+        select 1
+        from public.employees me
+        join public.employees them on them.id = p_employee_id
+        where me.id = public.current_employee_uuid()
+          and them.id <> me.id
+          and them.dept_id = me.dept_id
+          and (me.supervisor_id is null or them.id <> me.supervisor_id)
+          and them.last_day is null
+    );
+$$;
+
+-- ---------------------------------------------------------------------
+-- RPC: list the teammates the current user is allowed to file leave
+-- for (see can_request_leave_for() above for the exact rule). Admins
+-- don't call this — leaves.js loads the full employee directory for
+-- them instead, since an admin can file for anyone.
+-- ---------------------------------------------------------------------
+create or replace function public.list_my_leave_delegates()
+returns table (id uuid, name text, employee_id text)
+language sql
+security definer
+stable
+set search_path = ''
+as $$
+    select them.id, them.name, them.employee_id
+    from public.employees me
+    join public.employees them
+      on them.dept_id = me.dept_id
+     and them.id <> me.id
+     and (me.supervisor_id is null or them.id <> me.supervisor_id)
+     and them.last_day is null
+    where me.id = public.current_employee_uuid()
+    order by them.name;
+$$;
+
+-- ---------------------------------------------------------------------
+-- RPC: supervisor name + employee ID for each employee whose leave the
+-- caller can already see, so leaves.html can show
+-- "Awaiting <supervisor name (ID)>" on pending requests for regular
+-- (non-admin) users.
+--
+-- Why: employees can't normally read other employees' rows (RLS), so
+-- the page can't look up a supervisor's name itself and would fall back
+-- to "Awaiting supervisor". This returns ONLY the supervisor's name +
+-- employee ID, and only for employees whose leave the caller can see:
+--   * themself
+--   * their direct reports
+--   * anyone they filed leave for (leave_requests.requested_by)
+--   * everyone, if they're an admin
+-- Admins don't strictly need it (the page skips the call for them).
+--
+-- Coverage matches leave_requests_select exactly, because
+-- is_supervisor_of() is a DIRECT-supervisor check (not recursive): there
+-- is no "indirect supervisor" case that could see a request but get no
+-- name back.
+--
+-- Employees with no supervisor produce no row (inner join) — the page
+-- treats a missing row as "no supervisor assigned".
+--
+-- Return type is dropped first so re-runs can't fail with "cannot
+-- change return type of existing function".
+-- ---------------------------------------------------------------------
+drop function if exists public.list_leave_approvers();
+
+create function public.list_leave_approvers()
+returns table (
+    out_employee        uuid,
+    out_supervisor      uuid,
+    out_supervisor_name text,
+    out_supervisor_code text
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+    select e.id, s.id, s.name, s.employee_id
+      from public.employees e
+      join public.employees s on s.id = e.supervisor_id
+     where public.current_employee_uuid() is not null
+       and (
+            e.id = public.current_employee_uuid()
+         or e.supervisor_id = public.current_employee_uuid()
+         or public.is_admin()
+         or exists (
+                select 1
+                  from public.leave_requests lr
+                 where lr.employee_id = e.id
+                   and lr.requested_by = public.current_employee_uuid()
+            )
+       );
+$$;
+
+
+-- ---------------------------------------------------------------------
+-- Employees RLS: let a supervisor read their direct reports' row.
+--
+-- Why this lives here instead of 01_employee_info_schema.sql: it only
+-- exists to support the leaves feature — specifically, PostgREST's
+-- embedded employee:employee_id(name, employee_id) join in leaves.js's
+-- loadRequests(). That embed is resolved against employees' own RLS,
+-- separately from leave_requests_select below: a supervisor could
+-- already see a subordinate's leave_requests row (is_supervisor_of()),
+-- but without this, employees' existing policies (self/admin only)
+-- silently blank out the embedded name/employee_id for anyone else —
+-- PostgREST doesn't error on a denied embed, it just omits it, which
+-- is why "Team requests" was showing blank employee names instead of
+-- a permission error.
+--
+-- This is purely additive (a second permissive SELECT policy, OR'd
+-- with whatever 01 already defines) and uses a name namespaced to this
+-- file, so it can't collide with or replace anything already there —
+-- safe to run regardless of what 01's existing policies look like.
+-- ---------------------------------------------------------------------
+drop policy if exists "leaves_employees_select_direct_reports" on public.employees;
+create policy "leaves_employees_select_direct_reports" on public.employees
+    for select to authenticated
+    using (public.is_supervisor_of(id));
+
+
+-- ---------------------------------------------------------------------
 -- Trigger: enforce who a request is for / who submitted it, and handle
 -- the admin-creates-for-someone-else auto-approval rule. Runs before
 -- generate/calc triggers but order doesn't actually matter between them
@@ -164,17 +364,25 @@ security definer
 set search_path = ''
 as $$
 begin
+    new.requested_by := public.current_employee_uuid();
+
+    -- An approval comment can only ever come from the approver, after
+    -- the fact (set_leave_review_comment()), never from the insert.
+    new.review_comment := null;
+
     if not public.is_admin() then
-        -- Self-service: always for yourself, always starts pending,
-        -- regardless of what the client tried to send.
-        new.employee_id  := public.current_employee_uuid();
-        new.requested_by := public.current_employee_uuid();
+        -- Self-service, whether it's for themselves or an eligible
+        -- teammate (see can_request_leave_for()): always pending,
+        -- never auto-approved, regardless of who it's for.
+        if new.employee_id is null or new.employee_id = public.current_employee_uuid() then
+            new.employee_id := public.current_employee_uuid();
+        elsif not public.can_request_leave_for(new.employee_id) then
+            raise exception 'You can only file leave for yourself or a same-department teammate (not your supervisor)';
+        end if;
         new.status       := 0;
         new.approved_by  := null;
         new.approved_at  := null;
     else
-        new.requested_by := coalesce(new.requested_by, public.current_employee_uuid());
-
         if new.employee_id <> public.current_employee_uuid() then
             -- Admin creating on behalf of someone else: auto-approved,
             -- no further review needed.
@@ -246,7 +454,8 @@ create trigger trg_leave_requests_audit
 
 
 -- =====================================================================
--- REVIEW / CANCEL (SECURITY DEFINER — see approval model note up top)
+-- REVIEW / CANCEL / COMMENT (SECURITY DEFINER — see approval model
+-- note up top)
 -- =====================================================================
 create or replace function public.review_leave_request(
     p_request_id uuid,
@@ -294,7 +503,8 @@ begin
     set status            = v_new_status,
         approved_by       = public.current_employee_uuid(),
         approved_at       = now(),
-        rejection_reason  = case when v_new_status = 2 then p_rejection_reason else null end
+        rejection_reason  = case when v_new_status = 2 then p_rejection_reason else null end,
+        review_comment    = null -- start clean; the approver's comment (if any) is saved by set_leave_review_comment() right after
     where id = p_request_id;
 end;
 $$;
@@ -331,6 +541,40 @@ begin
 end;
 $$;
 
+-- Set (or clear) the optional comment on an APPROVED request. Only the
+-- person who approved it may do so. A blank comment clears it. Called by
+-- leaves.js right after review_leave_request(); kept separate so the
+-- approval itself is unchanged and the page still works (comments simply
+-- hidden) if this ever isn't deployed.
+--
+-- Note: for an admin-filed-for-someone-else request the admin is the
+-- approver (auto-approved on insert), so they can comment on it too.
+create or replace function public.set_leave_review_comment(
+    p_request_id uuid,
+    p_comment    text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+    v_me uuid := public.current_employee_uuid();
+begin
+    update public.leave_requests lr
+       set review_comment = nullif(btrim(p_comment), '')
+     where lr.id = p_request_id
+       and lr.status = 1
+       and lr.approved_by is not distinct from v_me
+       and v_me is not null;
+
+    if not found then
+        raise exception 'Only the approver of an approved request can comment on it'
+            using errcode = '42501';
+    end if;
+end;
+$$;
+
 
 -- =====================================================================
 -- ROW LEVEL SECURITY
@@ -353,15 +597,20 @@ drop policy if exists "lookup_read_leave_statuses" on public.leave_statuses;
 create policy "lookup_read_leave_statuses" on public.leave_statuses
     for select to authenticated using (true);
 
--- Leave requests: self, direct supervisor, or admin can read. Self or
--- admin can insert (trigger above enforces the rest). Admin has full
--- write access via RLS; supervisor approval/self-cancel go through the
--- RPCs above instead of RLS update policies.
+-- Leave requests: self, an eligible teammate's requester, direct
+-- supervisor, or admin can read (so a request shows up for both the
+-- person it's for AND whoever filed it). Self, a same-department
+-- teammate (per can_request_leave_for()), or admin can insert (trigger
+-- above enforces the rest, and always leaves it pending unless an
+-- admin filed for someone else). Admin has full write access via RLS;
+-- supervisor approval/self-cancel go through the RPCs above instead of
+-- RLS update policies.
 drop policy if exists "leave_requests_select" on public.leave_requests;
 create policy "leave_requests_select" on public.leave_requests
     for select to authenticated
     using (
         employee_id = public.current_employee_uuid()
+        or requested_by = public.current_employee_uuid()
         or public.is_supervisor_of(employee_id)
         or public.is_admin()
     );
@@ -371,7 +620,20 @@ create policy "leave_requests_insert" on public.leave_requests
     for insert to authenticated
     with check (
         employee_id = public.current_employee_uuid()
+        or public.can_request_leave_for(employee_id)
         or public.is_admin()
+    );
+
+drop policy if exists "leave_requests_self_update" on public.leave_requests;
+create policy "leave_requests_self_update" on public.leave_requests
+    for update to authenticated
+    using (
+        employee_id = public.current_employee_uuid()
+        and status = 0
+    )
+    with check (
+        employee_id = public.current_employee_uuid()
+        and status = 0
     );
 
 drop policy if exists "leave_requests_admin_update" on public.leave_requests;
@@ -406,3 +668,23 @@ to authenticated, service_role;
 grant usage, select on
     public.leave_types_leave_type_id_seq
 to authenticated, service_role;
+
+-- Callable functions: signed-in users (and service_role) only. Postgres
+-- grants EXECUTE to PUBLIC by default and Supabase's default privileges
+-- also grant it to anon, so revoke both first, then grant explicitly.
+-- (Trigger functions are not listed: they need no EXECUTE grant.)
+revoke all on function public.is_supervisor_of(uuid)                  from public, anon;
+revoke all on function public.can_request_leave_for(uuid)             from public, anon;
+revoke all on function public.list_my_leave_delegates()               from public, anon;
+revoke all on function public.list_leave_approvers()                  from public, anon;
+revoke all on function public.review_leave_request(uuid, text, text)  from public, anon;
+revoke all on function public.cancel_leave_request(uuid)              from public, anon;
+revoke all on function public.set_leave_review_comment(uuid, text)    from public, anon;
+
+grant execute on function public.is_supervisor_of(uuid)                  to authenticated, service_role;
+grant execute on function public.can_request_leave_for(uuid)             to authenticated, service_role;
+grant execute on function public.list_my_leave_delegates()               to authenticated, service_role;
+grant execute on function public.list_leave_approvers()                  to authenticated, service_role;
+grant execute on function public.review_leave_request(uuid, text, text) to authenticated, service_role;
+grant execute on function public.cancel_leave_request(uuid)              to authenticated, service_role;
+grant execute on function public.set_leave_review_comment(uuid, text)    to authenticated, service_role;
