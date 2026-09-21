@@ -58,7 +58,7 @@ let initialized = false;    // guards against ess:ready firing more than once (w
 
 let leaveTypes = [];        // all rows (active + inactive), for the admin manage-types list
 let activeLeaveTypes = [];  // active-only, for the request form's select
-let selectableEmployees = []; // who I can file a request for, besides myself — admin: everyone; everyone else: same-department teammates minus their own supervisor (see list_my_leave_delegates())
+let selectableEmployees = []; // who I can file a request for, besides myself — admin: everyone; everyone else: everyone in the same department, their own supervisor included (see list_my_leave_delegates())
 let myReportIds = new Set(); // employees.id of my direct reports (non-admin only; admins already have authority over everyone)
 let reviewCommentSupported = true;    // flipped off if leave_requests.review_comment doesn't exist yet (see loadRequests)
 let supervisorEmbedSupported = true; // flipped off if PostgREST can't resolve the nested supervisor lookup (see loadRequests)
@@ -641,8 +641,8 @@ async function loadMyReports() {
 
 // Admins can file for anyone (existing full-directory read they already
 // have elsewhere). Everyone else goes through list_my_leave_delegates(),
-// a SECURITY DEFINER RPC scoped server-side to "same department, not my
-// own supervisor" — the exact set leave_requests_insert's RLS check
+// a SECURITY DEFINER RPC scoped server-side to "same department" (my own
+// supervisor included) — the exact set leave_requests_insert's RLS check
 // will actually allow, kept in sync with can_request_leave_for().
 async function loadSelectableEmployees() {
     if (isAdmin) {
@@ -883,7 +883,7 @@ function populateEmployeeSelect() {
 
     onBehalfOfHint.textContent = isAdmin
         ? 'Choosing anyone other than yourself creates the request already approved.'
-        : 'You can also file this for a teammate in your department (not your supervisor) — it stays pending, same as your own requests, and needs their supervisor\u2019s approval.';
+        : 'You can also file this for anyone in your department, including your supervisor — it stays pending, same as your own requests, and needs their supervisor\u2019s approval.';
 }
 
 // ---------------------------------------------------------------------
@@ -1011,8 +1011,9 @@ async function loadRequests() {
 // ---------------------------------------------------------------------
 // Days of an approved request that fall inside [rangeStart, rangeEnd]
 // (inclusive; pass null for an open-ended side). Used to split approved
-// leave around today: "taken" is Jan 1 → today, "upcoming" is tomorrow → ∞,
-// so an in-progress request contributes to both and the two add up to its
+// leave around today: "taken" is Jan 1 → today (split into annual leave vs.
+// every other type on the cards), "upcoming" is tomorrow → ∞, so an
+// in-progress request contributes to both and the two add up to its
 // total_days.
 //  - Request entirely inside the range: the server's total_days, as-is.
 //  - Request crossing a range boundary: counted client-side over just the
@@ -1038,6 +1039,37 @@ function daysWithinRange(r, rangeStart, rangeEnd) {
     return days;
 }
 
+// The leave type that counts as "AL" on the stat cards. Matched by name
+// (case-insensitive) — it's the seeded, unique row in leave_types (see
+// 02_leaves_schema.sql). Every other leave type falls under "Other leave".
+const ANNUAL_LEAVE_TYPE_NAME = 'annual leave';
+
+// A request's leave type name: the embedded join first, then the
+// already-loaded leave_types list as a fallback if the embed came back
+// empty, so an annual-leave request is never miscounted as "other".
+function leaveTypeNameOf(r) {
+    return (
+        embedded(r.leave_type, 'leave_type') ||
+        leaveTypes.find(t => String(t.leave_type_id) === String(r.leave_type_id))?.leave_type ||
+        ''
+    ).trim();
+}
+
+function isAnnualLeave(r) {
+    return leaveTypeNameOf(r).toLowerCase() === ANNUAL_LEAVE_TYPE_NAME;
+}
+
+// Inline icons (Lucide-style, same stroke conventions as the toolbar
+// icons in leaves.html). Sized by .stat-card-icon svg in styles.css.
+const STAT_ICONS = {
+    // sun — annual leave
+    annual: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+    // clipboard with list lines — all other leave types
+    other: '<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/>',
+    // calendar with clock — upcoming approved leave
+    upcoming: '<path d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h5"/><path d="M17.5 17.5 16 16.3V14"/><circle cx="16" cy="16" r="6"/>'
+};
+
 function renderStats() {
     const thisYear = new Date().getFullYear();
     const today = new Date(new Date().toDateString());
@@ -1047,20 +1079,27 @@ function renderStats() {
     const yearStart = new Date(thisYear, 0, 1);
 
     const approved = mine.filter(r => r.status === 1);
-    const sumDays = (from, to) => approved.reduce((sum, r) => sum + daysWithinRange(r, from, to), 0);
+    const approvedAnnual = approved.filter(isAnnualLeave);
+    const approvedOther = approved.filter(r => !isAnnualLeave(r));
+    const sumDays = (list, from, to) => list.reduce((sum, r) => sum + daysWithinRange(r, from, to), 0);
 
-    const myDaysTakenThisYear = sumDays(yearStart, today);  // Jan 1 → today
-    const myUpcomingDays = sumDays(tomorrow, null);         // tomorrow → any future date, any year
+    const annualTakenThisYear = sumDays(approvedAnnual, yearStart, today); // Jan 1 → today, annual leave only
+    const otherTakenThisYear = sumDays(approvedOther, yearStart, today);   // Jan 1 → today, every other leave type
+    const myUpcomingDays = sumDays(approved, tomorrow, null);              // tomorrow → any future date, any year, all types
 
     const cards = [
-        { label: `Days taken (${thisYear})`, value: myDaysTakenThisYear, variant: 'accent' },
-        { label: 'My upcoming approved leave', value: myUpcomingDays, variant: 'success' }
+        { label: `AL taken (${thisYear})`, value: annualTakenThisYear, variant: 'accent', icon: STAT_ICONS.annual },
+        { label: `Other leave taken (${thisYear})`, value: otherTakenThisYear, variant: 'violet', icon: STAT_ICONS.other },
+        { label: 'My upcoming approved leave', value: myUpcomingDays, variant: 'success', icon: STAT_ICONS.upcoming }
     ];
 
     statsGrid.innerHTML = cards.map(c => `
         <div class="stat-card stat-card--${c.variant}">
             <div class="stat-card-top">
                 <span class="stat-card-label">${escapeHtml(c.label)}</span>
+                <span class="stat-card-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${c.icon}</svg>
+                </span>
             </div>
             <span class="stat-card-value">${c.value}</span>
         </div>
@@ -1622,7 +1661,7 @@ async function onSubmitLeaveRequest(e) {
         if (error.code === '23P01') {
             showToast('These dates overlap another pending or approved request for this person.', 'danger');
         } else if (error.code === '42501' || /row-level security/i.test(error.message || '')) {
-            showToast('You can only file leave for yourself or a same-department teammate (not your supervisor).', 'danger');
+            showToast('You can only file leave for yourself or someone in your department.', 'danger');
         } else {
             showToast('Could not submit request: ' + error.message, 'danger');
         }

@@ -29,8 +29,9 @@
 --
 -- Approval model:
 --   - A regular employee can insert a request for themselves, or for an
---     eligible teammate (same department, not their own supervisor —
---     see can_request_leave_for() / list_my_leave_delegates() below).
+--     eligible colleague (anyone in the same department, their own
+--     supervisor included — see can_request_leave_for() /
+--     list_my_leave_delegates() below).
 --     Enforced by both RLS and a BEFORE INSERT trigger — defense in
 --     depth. Either way it always starts life as 'pending': filing for
 --     a teammate never skips their normal approval step.
@@ -218,10 +219,12 @@ $$;
 
 -- ---------------------------------------------------------------------
 -- Helper: can the current (non-admin) user file a leave request on
--- behalf of p_employee_id? Rule: same department, not themselves
--- (that's just a normal self-request), and not their own supervisor
--- (filing "for" the person who approves you defeats the point of
--- approval). Active employees only (last_day is null).
+-- behalf of p_employee_id? Rule: same department, and not themselves
+-- (that's just a normal self-request). Their own supervisor IS eligible:
+-- the request still starts out pending and is reviewed via
+-- review_leave_request() by that supervisor's own supervisor (or an
+-- admin), so the filer never approves anything. Active employees only
+-- (last_day is null).
 --
 -- Used both server-side (trigger + insert RLS, below) and by
 -- list_my_leave_delegates() to build the picker leaves.js shows in
@@ -242,7 +245,6 @@ as $$
         where me.id = public.current_employee_uuid()
           and them.id <> me.id
           and them.dept_id = me.dept_id
-          and (me.supervisor_id is null or them.id <> me.supervisor_id)
           and them.last_day is null
     );
 $$;
@@ -265,7 +267,6 @@ as $$
     join public.employees them
       on them.dept_id = me.dept_id
      and them.id <> me.id
-     and (me.supervisor_id is null or them.id <> me.supervisor_id)
      and them.last_day is null
     where me.id = public.current_employee_uuid()
     order by them.name;
@@ -425,7 +426,7 @@ begin
         if new.employee_id is null or new.employee_id = public.current_employee_uuid() then
             new.employee_id := public.current_employee_uuid();
         elsif not public.can_request_leave_for(new.employee_id) then
-            raise exception 'You can only file leave for yourself or a same-department teammate (not your supervisor)';
+            raise exception 'You can only file leave for yourself or someone in your department';
         end if;
         new.status       := 0;
         new.approved_by  := null;

@@ -157,6 +157,38 @@
   font-size: 0.72rem;
   padding: 2px 8px;
 }
+/* ---------------------------------------------------------------- */
+/* Flush table bottom. Each tab pane wraps its table in a
+   .room-manage-card.table-card, but that pane already lives inside
+   #leavesTabsCard (also a .room-manage-card.table-card). The inner card
+   is therefore a second, nested card: its own border shows as a line
+   under the last row, and .table-card's margin-bottom leaves a blank
+   gap above the outer card's edge. Flatten the inner card so the table
+   is the outer card's content, and let the last row end exactly at the
+   container's bottom edge (the outer card's `overflow: hidden` still
+   clips the rounded corners). */
+/* ---------------------------------------------------------------- */
+#leavesTabContent .room-manage-card {
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+#leavesTabContent .table-scroll {
+  margin: 0;
+  padding: 0;
+}
+#myRequestsTable,
+#teamRequestsTable {
+  margin: 0;
+}
+#myRequestsTable tbody tr:last-child td,
+#teamRequestsTable tbody tr:last-child td {
+  border-bottom: none;
+}
+
 .half-day-tag {
   color: var(--ink-faint);
   font-size: 0.78rem;
