@@ -344,10 +344,6 @@ function pencilIconSvg() {
         '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
 }
 
-function eyeIconSvg() {
-    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-        '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
-}
 function moreIconSvg() {
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
         '<circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>';
@@ -393,6 +389,7 @@ const leaveDetailModalEl = document.getElementById('leaveDetailModal');
 const leaveDetailStatus = document.getElementById('leaveDetailStatus');
 const leaveDetailBody = document.getElementById('leaveDetailBody');
 const leaveDetailActions = document.getElementById('leaveDetailActions');
+const leaveDetailCloseBtn = document.getElementById('leaveDetailCloseBtn');
 
 const newLeaveTypeInput = document.getElementById('newLeaveTypeInput');
 const addLeaveTypeBtn = document.getElementById('addLeaveTypeBtn');
@@ -1167,9 +1164,10 @@ function isMineRequest(r) {
     return !isTeamRequest(r);
 }
 
-// Row actions. Every row shows a View button; whatever else the current
-// user may do (approve / reject / edit / cancel) is grouped in a "More
-// actions" dropdown, and repeated in the details modal's footer.
+// Row actions. Clicking a row opens its details (see onRowActionClick());
+// whatever the current user may do (approve / reject / edit / cancel) is
+// grouped in a "More actions" dropdown, and repeated in the details
+// modal's footer.
 const ACTION_DEFS = {
     approve:     { label: 'Approve',        attr: 'data-approve',      icon: checkIconSvg,  tone: 'success', btn: 'btn-emerald' },
     reject:      { label: 'Reject',         attr: 'data-reject',       icon: xIconSvg,      tone: 'danger',  btn: 'btn-rose' },
@@ -1208,29 +1206,37 @@ function getRowActions(r) {
     return actions;
 }
 
+// One item of a "More actions" dropdown (table rows and the details footer).
+function actionMenuItem(k, id) {
+    const d = ACTION_DEFS[k];
+    return `<li><button type="button" class="dropdown-item${d.tone ? ' is-' + d.tone : ''}" ${d.attr}="${id}">${d.icon()}<span>${d.label}</span></button></li>`;
+}
+
+// "Review" actions first, then a divider, then the rest — same grouping in
+// both places the menu appears.
+function actionMenuItems(keys, id) {
+    const review = keys.filter(k => REVIEW_ACTIONS.includes(k));
+    const other = keys.filter(k => !REVIEW_ACTIONS.includes(k));
+    return review.map(k => actionMenuItem(k, id)).join('') +
+        (review.length && other.length ? '<li><hr class="dropdown-divider"></li>' : '') +
+        other.map(k => actionMenuItem(k, id)).join('');
+}
+
 function renderActionsCell(r) {
     const keys = getRowActions(r);
-    const viewBtn = `<button type="button" class="btn-icon-only" title="View details" aria-label="View details" data-view="${r.id}">${eyeIconSvg()}</button>`;
+    // Nothing to do on this row (e.g. someone else's, or already reviewed
+    // and I'm not an admin): leave the cell empty. It stays part of the
+    // clickable row, so clicking it still opens the details.
+    if (!keys.length) return '<td class="actions-col"></td>';
 
-    let menu = '';
-    if (keys.length) {
-        const item = (k) => {
-            const d = ACTION_DEFS[k];
-            return `<li><button type="button" class="dropdown-item${d.tone ? ' is-' + d.tone : ''}" ${d.attr}="${r.id}">${d.icon()}<span>${d.label}</span></button></li>`;
-        };
-        const review = keys.filter(k => REVIEW_ACTIONS.includes(k));
-        const other = keys.filter(k => !REVIEW_ACTIONS.includes(k));
-        menu = `
-            <div class="dropdown row-more">
-                <button type="button" class="btn-icon-only" data-bs-toggle="dropdown" aria-expanded="false" title="More actions" aria-label="More actions">${moreIconSvg()}</button>
-                <ul class="dropdown-menu dropdown-menu-end row-actions-menu">
-                    ${review.map(item).join('')}
-                    ${review.length && other.length ? '<li><hr class="dropdown-divider"></li>' : ''}
-                    ${other.map(item).join('')}
-                </ul>
-            </div>`;
-    }
-    return `<td class="actions-col"><div class="actions-wrap">${viewBtn}${menu}</div></td>`;
+    const menu = `
+        <div class="dropdown row-more">
+            <button type="button" class="btn-icon-only" data-bs-toggle="dropdown" aria-expanded="false" title="More actions" aria-label="More actions">${moreIconSvg()}</button>
+            <ul class="dropdown-menu dropdown-menu-end row-actions-menu">
+                ${actionMenuItems(keys, r.id)}
+            </ul>
+        </div>`;
+    return `<td class="actions-col"><div class="actions-wrap">${menu}</div></td>`;
 }
 
 // The tables sit inside .table-scroll (overflow-x: auto), which would clip
@@ -1251,14 +1257,13 @@ function initRowDropdowns(container) {
 }
 
 const ROW_ACTIONS = {
-    view: (id) => openLeaveDetail(id),
     edit: (id) => openLeaveRequestModal(id),
     cancel: (id) => onCancelRequest(id),
     adminCancel: (id) => onAdminCancelRequest(id),
     approve: (id) => onReviewRequest(id, 'approved'),
     reject: (id) => onReviewRequest(id, 'rejected')
 };
-const ROW_ACTION_SELECTOR = '[data-view], [data-edit], [data-cancel], [data-admin-cancel], [data-approve], [data-reject]';
+const ROW_ACTION_SELECTOR = '[data-edit], [data-cancel], [data-admin-cancel], [data-approve], [data-reject]';
 
 function dispatchRowAction(btn) {
     for (const [key, handler] of Object.entries(ROW_ACTIONS)) {
@@ -1270,15 +1275,16 @@ function dispatchRowAction(btn) {
 }
 
 // Delegated click handler for both tables: action buttons / dropdown items,
-// or a click anywhere else on a request row (outside the Action cell) to
-// open its details.
+// or a click anywhere else on a request row to open its details. Only the
+// Action cell's own controls (the "More actions" button and its menu) are
+// excluded, so an empty Action cell still opens the details.
 function onRowActionClick(e) {
     const btn = e.target.closest(ROW_ACTION_SELECTOR);
     if (btn && e.currentTarget.contains(btn)) {
         dispatchRowAction(btn);
         return;
     }
-    if (e.target.closest('.actions-col')) return;
+    if (e.target.closest('.actions-col button, .actions-col .dropdown-menu')) return;
     const row = e.target.closest('tr[data-request-id]');
     if (row && e.currentTarget.contains(row)) openLeaveDetail(row.dataset.requestId);
 }
@@ -1482,12 +1488,55 @@ function openLeaveDetail(requestId) {
         .map(html => `<dl class="detail-list">${html}</dl>`)
         .join('');
 
-    leaveDetailActions.innerHTML = getRowActions(r).map(k => {
-        const d = ACTION_DEFS[k];
-        return `<button type="button" class="btn btn-sm ${d.btn}" ${d.attr}="${r.id}">${d.icon()}<span>${d.label}</span></button>`;
-    }).join('');
+    renderDetailActions(r);
 
     leaveDetailModal.show();
+}
+
+// Details footer. Kept to as few buttons as the situation needs:
+//  - a request I can review (approve / reject): those two stay visible
+//    (Reject outlined, Approve solid, Approve last), everything else
+//    (edit / cancel) goes into a "More" menu on the left;
+//  - otherwise: Edit stays visible and whatever else is left (Cancel
+//    request) is offered after it;
+//  - a "More" menu is only used when it would hold two or more actions —
+//    a menu with a single item is shown as a plain button instead;
+//  - nothing to do: no actions at all, so a plain Close button shows
+//    instead. The header X / Esc / clicking outside close it either way.
+// Same actions and the same click handling as a row's dropdown.
+function renderDetailActions(r) {
+    disposeRowDropdowns(leaveDetailActions);
+
+    const keys = getRowActions(r);
+    const hasReview = keys.some(k => REVIEW_ACTIONS.includes(k));
+    let primary = hasReview
+        ? ['reject', 'approve'].filter(k => keys.includes(k))
+        : keys.slice(0, 1);
+    let more = keys.filter(k => !primary.includes(k));
+    if (more.length === 1) {   // don't hide a lone action behind a menu
+        primary = primary.concat(more);
+        more = [];
+    }
+
+    const btnClass = (k) => k === 'reject' ? 'btn-outline-rose' : ACTION_DEFS[k].btn;
+    const primaryBtns = primary.map(k => {
+        const d = ACTION_DEFS[k];
+        return `<button type="button" class="btn btn-sm ${btnClass(k)}" ${d.attr}="${r.id}">${d.icon()}<span>${d.label}</span></button>`;
+    }).join('');
+
+    const moreMenu = more.length ? `
+        <div class="dropdown dropup detail-more">
+            <button type="button" class="btn btn-ghost btn-sm" data-bs-toggle="dropdown" aria-expanded="false">${moreIconSvg()}<span>More</span></button>
+            <ul class="dropdown-menu row-actions-menu">
+                ${actionMenuItems(more, r.id)}
+            </ul>
+        </div>` : '';
+
+    leaveDetailActions.innerHTML = keys.length
+        ? `${moreMenu}<div class="detail-primary">${primaryBtns}</div>`
+        : '';
+    initRowDropdowns(leaveDetailActions);
+    leaveDetailCloseBtn.classList.toggle('hidden', keys.length > 0);
 }
 
 // ---------------------------------------------------------------------

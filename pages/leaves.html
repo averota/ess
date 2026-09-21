@@ -295,7 +295,10 @@
       <div class="modal-body" id="leaveDetailBody"></div>
       <div class="modal-footer">
         <div class="detail-actions" id="leaveDetailActions"></div>
-        <button type="button" class="btn btn-ghost btn-sm" data-bs-dismiss="modal">Close</button>
+        <!-- Only shown when the footer has no actions of its own (see
+             renderDetailActions() in leaves.js); the header X, Esc and a
+             click outside the dialog all close it too. -->
+        <button type="button" class="btn btn-ghost btn-sm hidden" id="leaveDetailCloseBtn" data-bs-dismiss="modal">Close</button>
       </div>
     </div>
   </div>

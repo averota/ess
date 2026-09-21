@@ -103,9 +103,10 @@
 /* ---------------------------------------------------------------- */
 /* Requests tables — compact rows. Each row shows only the essentials
    (leave type, dates, days, status + approver, a one-line reason) and a
-   small Action cell: a View button plus a "More actions" dropdown.
-   Everything else (full reason, comments, timestamps) is in the details
-   modal further down.                                               */
+   small Action cell holding just a "More actions" dropdown (empty when
+   there's nothing to do). Clicking anywhere else on the row opens the
+   details modal further down, which has everything else (full reason,
+   comments, timestamps).                                               */
 /* ---------------------------------------------------------------- */
 #myRequestsTable,
 #teamRequestsTable {
@@ -147,7 +148,6 @@
 #teamRequestsTable .actions-col {
   width: 76px;
   white-space: nowrap;
-  cursor: default;
 }
 #teamRequestsTable .employee-col {
   width: 150px;
@@ -244,6 +244,7 @@
   border-color: var(--border);
   border-radius: var(--radius-sm);
   box-shadow: 0 6px 20px rgba(27, 36, 48, 0.12);
+  cursor: default; /* the menu sits inside the clickable row */
 }
 .row-actions-menu .dropdown-item {
   display: flex;
@@ -306,8 +307,18 @@
 }
 .detail-actions {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 1 1 auto;
+}
+/* Visible actions sit at the right edge whether or not a "More" menu is
+   present on the left. */
+.detail-primary {
+  display: flex;
+  align-items: center;
   gap: 6px;
+  margin-left: auto;
 }
 .detail-actions .btn {
   display: inline-flex;
