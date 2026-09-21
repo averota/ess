@@ -81,6 +81,11 @@
 --     employees' rows, so list_leave_approvers() (SECURITY DEFINER)
 --     returns just the supervisor's name + employee ID, and only for
 --     people whose leave the caller can already see (see the function).
+--   - "Filed by <name (ID)>": same problem, same fix — the person who
+--     filed leave FOR me (a teammate, my own supervisor, or an admin)
+--     usually isn't readable under RLS, so list_leave_requesters()
+--     (SECURITY DEFINER) returns just their name + employee ID, and only
+--     for requests where the caller is the employee.
 --
 -- Half-day model:
 --   - start_half_day / end_half_day are each 'full', 'am', or 'pm'.
@@ -322,6 +327,49 @@ as $$
                    and lr.requested_by = public.current_employee_uuid()
             )
        );
+$$;
+
+-- ---------------------------------------------------------------------
+-- RPC: who filed each leave request that was filed FOR the caller by
+-- someone else, so leaves.html can show "Filed by <name (ID)>" on the
+-- caller's own leave (My leave tab, its details view, and the Filed by
+-- filter / Excel column).
+--
+-- Why: the person who filed it (a same-department teammate, the
+-- caller's own supervisor, or an admin in another department) is usually
+-- not readable under employees' RLS, so the page can't look up their
+-- name itself. This returns ONLY the requester's name + employee ID,
+-- and ONLY for requests where the caller is the employee — not for
+-- requests the caller filed for others (the page already knows those
+-- names from list_my_leave_delegates()), and not for anyone else's leave.
+--
+-- Self-filed requests (requested_by = employee_id) produce no row; the
+-- page treats a missing row as "no separate requester". requested_by is
+-- NOT NULL, so the inner join can't drop a real requester.
+--
+-- Return type is dropped first so re-runs can't fail with "cannot
+-- change return type of existing function".
+-- ---------------------------------------------------------------------
+drop function if exists public.list_leave_requesters();
+
+create function public.list_leave_requesters()
+returns table (
+    out_request         uuid,
+    out_requester       uuid,
+    out_requester_name  text,
+    out_requester_code  text
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+    select lr.id, req.id, req.name, req.employee_id
+      from public.leave_requests lr
+      join public.employees req on req.id = lr.requested_by
+     where public.current_employee_uuid() is not null
+       and lr.employee_id = public.current_employee_uuid()
+       and lr.requested_by <> lr.employee_id;
 $$;
 
 
@@ -677,6 +725,7 @@ revoke all on function public.is_supervisor_of(uuid)                  from publi
 revoke all on function public.can_request_leave_for(uuid)             from public, anon;
 revoke all on function public.list_my_leave_delegates()               from public, anon;
 revoke all on function public.list_leave_approvers()                  from public, anon;
+revoke all on function public.list_leave_requesters()                 from public, anon;
 revoke all on function public.review_leave_request(uuid, text, text)  from public, anon;
 revoke all on function public.cancel_leave_request(uuid)              from public, anon;
 revoke all on function public.set_leave_review_comment(uuid, text)    from public, anon;
@@ -685,6 +734,7 @@ grant execute on function public.is_supervisor_of(uuid)                  to auth
 grant execute on function public.can_request_leave_for(uuid)             to authenticated, service_role;
 grant execute on function public.list_my_leave_delegates()               to authenticated, service_role;
 grant execute on function public.list_leave_approvers()                  to authenticated, service_role;
+grant execute on function public.list_leave_requesters()                 to authenticated, service_role;
 grant execute on function public.review_leave_request(uuid, text, text) to authenticated, service_role;
 grant execute on function public.cancel_leave_request(uuid)              to authenticated, service_role;
 grant execute on function public.set_leave_review_comment(uuid, text)    to authenticated, service_role;

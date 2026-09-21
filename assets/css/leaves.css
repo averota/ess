@@ -69,6 +69,15 @@
   background: transparent;
 }
 
+/* Export Excel + Filters buttons, grouped at the right end of the tabs
+   toolbar (Export sits to the left of Filters). */
+.leaves-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 /* ---------------------------------------------------------------- */
 /* Request filters (Leave type / Year / Status) — reuses the shared
    .filter-multiselect-*, #filtersCollapse and #clearAllFiltersBtn
@@ -83,7 +92,8 @@
 }
 #filterYearInput,
 #filterStatusInput,
-#filterEmployeeInput {
+#filterEmployeeInput,
+#filterScopeInput {
   font-size: 0.8rem;
 }
 #filterEmployeeInput {

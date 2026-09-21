@@ -63,6 +63,8 @@ let myReportIds = new Set(); // employees.id of my direct reports (non-admin onl
 let reviewCommentSupported = true;    // flipped off if leave_requests.review_comment doesn't exist yet (see loadRequests)
 let supervisorEmbedSupported = true; // flipped off if PostgREST can't resolve the nested supervisor lookup (see loadRequests)
 let approverByEmployee = new Map(); // employees.id -> that employee's supervisor {id, name, employee_id}, from list_leave_approvers() — fills in names the nested embed can't read under RLS (non-admins)
+let requesterByRequest = new Map(); // leave_requests.id -> who filed it {id, name, employee_id}, for leave someone else filed for me, from list_leave_requesters() — same RLS workaround as approverByEmployee
+let requesterRpcSupported = true;   // flipped off if list_leave_requesters() isn't installed (see loadRequesterDirectory)
 let approverRpcSupported = true;    // flipped off if list_leave_approvers() isn't installed (see loadApproverDirectory)
 let allRequests = [];       // everything RLS lets me see: mine + (if supervisor/admin) my team's
 
@@ -166,6 +168,46 @@ function formatEmployeeName(rel) {
 // The single employee row embedded in a request (object or one-item array).
 function embeddedRow(rel) {
     return Array.isArray(rel) ? (rel[0] || null) : (rel || null);
+}
+
+// The employee a request is for, with a name whenever we can find one.
+// The nested `employee` embed comes back empty when RLS doesn't let me read
+// that person's row — exactly the case for leave I filed for a teammate I
+// don't supervise. list_my_leave_delegates() (selectableEmployees) already
+// gives me their name and ID, so fall back to it. Returns null if neither
+// source knows them.
+function requestEmployee(r) {
+    const emp = embeddedRow(r.employee);
+    if (emp?.name) return emp;
+    const known = selectableEmployees.find(e => e.id === r.employee_id);
+    return known ? { ...(emp || {}), name: known.name, employee_id: known.employee_id } : emp;
+}
+
+// Who filed a request, when that isn't the employee themselves — a
+// teammate or admin filing on their behalf. Returns:
+//   null                       self-filed (or requested_by not set)
+//   { id, name, employee_id }  someone else; `name` is '' if we can't
+//                              resolve it (see below)
+// Names come from list_leave_requesters() (covers leave someone filed for
+// ME even when RLS hides their row, e.g. my own supervisor or an admin in
+// another department), then the teammate list I already load. The
+// requested_by id alone is always known.
+function requesterOf(r) {
+    if (!r.requested_by || r.requested_by === r.employee_id) return null;
+    if (r.requested_by === myEmployeeId) return { id: myEmployeeId, name: myEmployeeName, employee_id: '' };
+    const known = requesterByRequest.get(r.id) || selectableEmployees.find(e => e.id === r.requested_by);
+    return known
+        ? { id: r.requested_by, name: known.name, employee_id: known.employee_id }
+        : { id: r.requested_by, name: '', employee_id: '' };
+}
+
+// Where a request sits from my point of view (My leave tab):
+//   'own'       I filed it, for me
+//   'byOthers'  it's my leave, but someone else filed it for me
+//   'forOthers' I filed it for a teammate
+function requestScope(r) {
+    if (r.employee_id !== myEmployeeId) return 'forOthers';
+    return requesterOf(r) ? 'byOthers' : 'own';
 }
 
 // Who can approve a PENDING request: the employee's current direct
@@ -320,6 +362,7 @@ const refreshListBtn = document.getElementById('refreshListBtn');
 const refreshListBtnLabel = document.getElementById('refreshListBtnLabel');
 const manageTypesBtn = document.getElementById('manageTypesBtn');
 const newRequestBtn = document.getElementById('newRequestBtn');
+const exportExcelBtn = document.getElementById('exportExcelBtn');
 
 const myLeaveTab = document.getElementById('myLeaveTab');
 const otherLeaveTab = document.getElementById('otherLeaveTab');
@@ -362,6 +405,7 @@ const filterLeaveTypeList = document.getElementById('filterLeaveTypeList');
 const filterYearInput = document.getElementById('filterYearInput');
 const filterStatusInput = document.getElementById('filterStatusInput');
 const filterEmployeeInput = document.getElementById('filterEmployeeInput'); // Team requests tab only
+const filterScopeInput = document.getElementById('filterScopeInput');       // My leave tab only: own leave vs leave I filed for others
 const clearAllFiltersBtn = document.getElementById('clearAllFiltersBtn');
 const activeFilterCount = document.getElementById('activeFilterCount');
 
@@ -421,6 +465,12 @@ async function init() {
     populateLeaveTypeSelect();
     populateEmployeeSelect();
     populateLeaveTypeFilter();
+
+    // Requests can arrive before the teammate list does, and teammate names
+    // (requestEmployee()) and the Requested-for filter both depend on it —
+    // so re-render now that everything is loaded.
+    syncEmployeeFilterVisibility();
+    applyFilters();
 }
 
 function applyRoleVisibility() {
@@ -430,6 +480,7 @@ function applyRoleVisibility() {
 function wireEvents() {
     refreshListBtn.addEventListener('click', onRefreshClick);
     newRequestBtn.addEventListener('click', () => openLeaveRequestModal());
+    exportExcelBtn.addEventListener('click', onExportExcelClick);
     leaveRequestForm.addEventListener('submit', onSubmitLeaveRequest);
     [startDateInput, endDateInput, startHalfDayInput, endHalfDayInput].forEach(el =>
         el.addEventListener('change', updateDaysPreview)
@@ -441,6 +492,7 @@ function wireEvents() {
     filterYearInput.addEventListener('change', applyFilters);
     filterStatusInput.addEventListener('change', applyFilters);
     filterEmployeeInput.addEventListener('change', applyFilters);
+    filterScopeInput.addEventListener('change', applyFilters);
     // The Employees filter only exists on the Team requests tab, so its
     // visibility (and its share of the active-filter badge) follows the
     // active tab. 'shown.bs.tab' also fires for programmatic Tab.show().
@@ -467,6 +519,74 @@ function wireEvents() {
         leaveDetailModalEl.addEventListener('hidden.bs.modal', () => dispatchRowAction(btn), { once: true });
         leaveDetailModal.hide();
     });
+}
+
+// ---------------------------------------------------------------------
+// Export Excel — the rows of whichever tab is open (My leave or Team
+// requests), after the current Leave type / Year / Status / Requested-for /
+// Employee filters, in the order the table shows them. Same SheetJS
+// json_to_sheet + writeFile approach as the employee directory export.
+// Both tabs share one column set, so a file from either tab reads the same.
+// ---------------------------------------------------------------------
+function onExportExcelClick() {
+    if (typeof XLSX === 'undefined') {
+        showToast('Excel export is unavailable — the spreadsheet library did not load.', 'danger');
+        return;
+    }
+
+    const teamTab = isTeamTabActive();
+    const rows = filteredRequests.filter(r => teamTab ? !isMineRequest(r) : isMineRequest(r));
+    if (rows.length === 0) {
+        showToast('No leave requests to export.', 'danger');
+        return;
+    }
+
+    const data = rows.map(r => {
+        const emp = requestEmployee(r);
+        const reviewed = r.status === 1 || r.status === 2;
+
+        // Same wording as the table's status line: "Awaiting <name>" while
+        // pending, the approver's name once approved / rejected.
+        let approver = '';
+        if (r.status === 0) {
+            const who = pendingApproverName(r);
+            approver = who ? `Awaiting ${who}` : '';
+        } else if (reviewed) {
+            approver = embedded(r.approver, 'name');
+        }
+
+        return {
+            'Employee ID': embedded(emp, 'employee_id'),
+            'Employee': embedded(emp, 'name'),
+            'Filed by': (() => {
+                const by = requesterOf(r);
+                return by ? (by.name || 'Another user') : '';   // blank = the employee filed it themselves
+            })(),
+            'Leave type': embedded(r.leave_type, 'leave_type'),
+            'Start date': r.start_date || '',
+            'Start': HALF_DAY_LABEL[r.start_half_day] || 'Full day',
+            'End date': r.end_date || '',
+            'End': HALF_DAY_LABEL[r.end_half_day] || 'Full day',
+            'Days': Number(r.total_days),
+            'Status': STATUS_LABEL[r.status],
+            'Approver': approver,
+            'Reviewed on': reviewed ? formatDateTime(r.approved_at) : '',
+            'Approver comment': r.status === 1 ? (r.review_comment || '') : '',
+            'Rejection reason': r.status === 2 ? (r.rejection_reason || '') : '',
+            'Reason': r.reason || '',
+            'Submitted': formatDateTime(r.created_at)
+        };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    // Size each column to its longest value (capped) so the file opens readable.
+    worksheet['!cols'] = Object.keys(data[0]).map(header => ({
+        wch: Math.min(40, data.reduce((max, row) => Math.max(max, String(row[header] ?? '').length), header.length) + 2)
+    }));
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, teamTab ? 'Team requests' : 'My leave');
+    XLSX.writeFile(workbook, `leave_requests_${teamTab ? 'team' : 'my-leave'}_${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
 
 async function onRefreshClick() {
@@ -656,11 +776,12 @@ function clearAllFilters() {
     filterYearInput.value = String(new Date().getFullYear());
     filterStatusInput.value = '';
     filterEmployeeInput.value = '';
+    filterScopeInput.value = '';
     applyFilters();
 }
 
 // Filters allRequests down into filteredRequests, then re-renders both
-// tabs from it (the Employees filter only narrows Team requests rows). Stats (renderStats()) intentionally stay based on the
+// tabs from it (the Employees filter only narrows Team requests rows, and the Requested-for filter only narrows My leave rows). Stats (renderStats()) intentionally stay based on the
 // full, unfiltered allRequests — the stat cards are a page-level
 // summary, not scoped to whatever's currently filtered in the tables.
 function applyFilters() {
@@ -668,9 +789,11 @@ function applyFilters() {
     const yearFilter = filterYearInput.value;       // e.g. '2026'
     const statusFilter = filterStatusInput.value;   // '', '0'..'3'
     const employeeFilter = filterEmployeeInput.value; // '' or an employees.id — applies to Team requests rows only
+    const scopeFilter = filterScopeInput.value;       // '', 'own', 'byOthers' or 'forOthers' — applies to My leave rows only
 
     filteredRequests = allRequests.filter(r => {
         if (employeeFilter && !isMineRequest(r) && r.employee_id !== employeeFilter) return false;
+        if (scopeFilter && isMineRequest(r) && requestScope(r) !== scopeFilter) return false;
         if (typeFilter.size > 0 && !typeFilter.has(String(r.leave_type_id))) return false;
         if (yearFilter) {
             const start = parseDateOnly(r.start_date);
@@ -694,6 +817,19 @@ function isTeamTabActive() {
 // a teammate), so there's nothing to pick between there.
 function syncEmployeeFilterVisibility() {
     filterEmployeeInput.classList.toggle('hidden', !isTeamTabActive());
+
+    // The "Filed by" filter is the My leave counterpart: it only means
+    // something once I can file for others, or someone has filed leave for
+    // me (or I already have), so it stays hidden until then. If it's hidden its value is reset, so a stale pick
+    // can never keep filtering rows behind the user's back.
+    const canFileForOthers = showOnBehalfField ||
+        allRequests.some(r => isMineRequest(r) && requestScope(r) !== 'own');
+    const showScope = !isTeamTabActive() && canFileForOthers;
+    filterScopeInput.classList.toggle('hidden', !showScope);
+    if (!canFileForOthers && filterScopeInput.value) {
+        filterScopeInput.value = '';
+        applyFilters();
+    }
 }
 
 function onLeavesTabChanged() {
@@ -709,7 +845,7 @@ function populateEmployeeFilter() {
     const employees = new Map(); // employees.id -> "Name (ID)"
     for (const r of allRequests) {
         if (isTeamRequest(r) && !employees.has(r.employee_id)) {
-            employees.set(r.employee_id, formatEmployeeName(r.employee));
+            employees.set(r.employee_id, formatEmployeeName(requestEmployee(r)));
         }
     }
     const sorted = Array.from(employees).sort((a, b) => a[1].localeCompare(b[1]));
@@ -726,6 +862,7 @@ function updateActiveFilterBadge() {
     if (filterYearInput.value && filterYearInput.value !== String(new Date().getFullYear())) count++;
     if (filterStatusInput.value) count++;
     if (isTeamTabActive() && filterEmployeeInput.value) count++; // hidden (and not applicable) on My leave
+    if (!isTeamTabActive() && filterScopeInput.value) count++;   // hidden (and not applicable) on Team requests
     activeFilterCount.textContent = String(count);
     activeFilterCount.classList.toggle('d-none', count === 0);
     clearAllFiltersBtn.disabled = count === 0;
@@ -781,6 +918,34 @@ async function loadApproverDirectory() {
     }]));
 }
 
+// Names of whoever filed leave on my behalf. A regular employee usually
+// can't read that person's employee row (RLS) — they may be my own
+// supervisor or an admin — so this SECURITY DEFINER RPC returns just the
+// requester's name for requests filed for me. If it isn't installed yet,
+// stop asking; names then come only from the teammate list, and anyone
+// else shows as "Filed on your behalf".
+async function loadRequesterDirectory() {
+    if (!requesterRpcSupported) return;
+
+    let data = null;
+    let error = null;
+    try {
+        ({ data, error } = await sb.rpc('list_leave_requesters'));
+    } catch (err) {
+        error = err;
+    }
+    if (error) {
+        console.warn('leaves: could not load requester names:', error);
+        if (error.code === '42883' || /^PGRST/.test(error.code || '')) requesterRpcSupported = false;
+        return;
+    }
+    requesterByRequest = new Map((data || []).map(a => [a.out_request, {
+        id: a.out_requester,
+        name: a.out_requester_name,
+        employee_id: a.out_requester_code
+    }]));
+}
+
 // Each request's employee comes with their supervisor (the person who can
 // approve it while pending) so the tables can show "Awaiting <name>". That
 // nested lookup is optional: `supervisor_id` tells us whether one is
@@ -806,7 +971,7 @@ function fetchRequestRows() {
 }
 
 async function loadRequests() {
-    const [rows] = await Promise.all([fetchRequestRows(), loadApproverDirectory()]);
+    const [rows] = await Promise.all([fetchRequestRows(), loadApproverDirectory(), loadRequesterDirectory()]);
     let { data, error } = rows;
 
     // Two optional extras ride along on this query — the approval comment
@@ -837,6 +1002,7 @@ async function loadRequests() {
     renderStats();
     updateTabBadges();
     populateEmployeeFilter();
+    syncEmployeeFilterVisibility();
     applyFilters();
 }
 
@@ -1121,15 +1287,22 @@ function renderMyRequests() {
     }
 
     myRequestsBody.innerHTML = mine.map(r => {
-        // Filed by me, but for a teammate: read-only here (it's not my
-        // leave to edit/cancel) — see getRowActions().
-        const filedForSomeoneElse = r.employee_id !== myEmployeeId;
-        const forName = embedded(r.employee, 'name') || formatEmployeeName(r.employee);
+        // Filed by me for a teammate: read-only here (it's not my leave to
+        // edit/cancel) — see getRowActions(). Leave someone else filed for
+        // me is still my leave, with a "Filed by" line saying who.
+        const scope = requestScope(r);
+        let note = '';
+        if (scope === 'forOthers') {
+            note = `For ${embedded(requestEmployee(r), 'name') || 'a teammate'}`;
+        } else if (scope === 'byOthers') {
+            const by = requesterOf(r);
+            note = by?.name ? `Filed by ${by.name}` : 'Filed on your behalf';
+        }
         return `
         <tr data-request-id="${r.id}">
             <td>
                 ${escapeHtml(embedded(r.leave_type, 'leave_type'))}
-                ${filedForSomeoneElse ? `<span class="row-sub">For ${escapeHtml(forName)}</span>` : ''}
+                ${note ? `<span class="row-sub" title="${escapeHtml(note)}">${escapeHtml(note)}</span>` : ''}
             </td>
             <td>${renderDateRange(r)}</td>
             <td class="days-col">${r.total_days}</td>
@@ -1164,7 +1337,7 @@ function renderTeamRequests() {
 
     teamRequestsBody.innerHTML = team.map(r => `
         <tr data-request-id="${r.id}">
-            <td class="employee-col">${renderEmployeeCell(r.employee)}</td>
+            <td class="employee-col">${renderEmployeeCell(requestEmployee(r))}</td>
             <td>${escapeHtml(embedded(r.leave_type, 'leave_type'))}</td>
             <td>${renderDateRange(r)}</td>
             <td class="days-col">${r.total_days}</td>
@@ -1209,6 +1382,15 @@ function detailRow(label, valueHtml) {
     return `<div class="detail-row"><dt>${label}</dt><dd>${valueHtml}</dd></div>`;
 }
 
+// "Filed by" line for the details view; empty when the employee filed it
+// themselves. Shows Name (ID) when known.
+function filedByText(r) {
+    const by = requesterOf(r);
+    if (!by) return '';
+    if (by.id === myEmployeeId) return 'You, on their behalf';
+    return escapeHtml(by.name ? formatEmployeeName(by) : 'Another user, on their behalf');
+}
+
 function openLeaveDetail(requestId) {
     const r = allRequests.find(x => x.id === requestId);
     if (!r) return;
@@ -1222,7 +1404,7 @@ function openLeaveDetail(requestId) {
 
     // Group 1 — the request itself
     const requestRows = [
-        detailRow('Employee', escapeHtml(formatEmployeeName(r.employee))),
+        detailRow('Employee', escapeHtml(embedded(requestEmployee(r), 'name') ? formatEmployeeName(requestEmployee(r)) : 'A teammate')),
         detailRow('Leave type', escapeHtml(embedded(r.leave_type, 'leave_type') || '—')),
         r.start_date === r.end_date
             ? detailRow('Date', dateLine(r.start_date, r.start_half_day))
@@ -1252,7 +1434,7 @@ function openLeaveDetail(requestId) {
     // Group 3 — bookkeeping
     const metaRows = [
         detailRow('Submitted', escapeHtml(formatDateTime(r.created_at))),
-        detailRow('Filed by', r.requested_by === myEmployeeId && r.employee_id !== myEmployeeId ? 'You, on their behalf' : '')
+        detailRow('Filed by', filedByText(r))
     ];
 
     leaveDetailBody.innerHTML = [requestRows, reviewRows, metaRows]
@@ -1288,7 +1470,7 @@ function openLeaveRequestModal(requestId = null) {
 
         onBehalfOfField.classList.add('hidden');
         editingForBanner.classList.remove('hidden');
-        editingForText.textContent = `Editing request for ${formatEmployeeName(req.employee)}`;
+        editingForText.textContent = `Editing request for ${formatEmployeeName(requestEmployee(req))}`;
 
         leaveTypeInput.value = String(req.leave_type_id);
         startDateInput.value = req.start_date;
