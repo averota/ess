@@ -4,7 +4,15 @@
    Reads and writes the tables from 03_policies_schemas.sql:
      policy_weekly_working_days   -> "Working week"
      policy_settings              -> "Monthly working days", "Leave year cut-off"
-     leave_type_policies          -> one accordion item per leave type
+     leave_type_policies          -> one accordion item per leave type,
+                                     including its eligibility, proration
+                                     and approval-routing rules
+     leave_type_proration_tiers   -> the "Use tiered credits for hire
+                                     month" editor inside a leave type's
+                                     "New Hire Proration & Accrual" card
+
+   Also reads (read-only, for the "Reviewed by" dropdown):
+     positions                    -> 01_employee_info_schema.sql
 
    Structure
      createSection(cfg)   shared behaviour for ONE policy section: dirty
@@ -21,6 +29,11 @@
                               (optional) onEdit, auditOf, afterSave, recover
      To add a policy: add its markup, then add one createSection() below.
 
+   Leave-type list UI (quick-stats bar, search box, status-filter pills
+   above #ltList) is separate from createSection()/dirty-tracking — it
+   only affects which rows are visible and the three stat counts, never
+   what's saved. See refreshLeaveTypeListUI() and initLeaveTypeListControls().
+
    Access model (see the SQL header): everyone signed in can read; only
    admins can write. Under RLS a blocked UPDATE succeeds with zero rows, so
    every save checks that a row actually came back.
@@ -35,6 +48,7 @@
    Columns used (from the .sql files):
      leave_types           leave_type_id, leave_type, is_active     (02)
      employees             id, name                                 (01)
+     positions              post_id, position, is_active             (01)
      policy_settings       id, standard_monthly_working_days,
                            year_cutoff_month, year_cutoff_day,
                            modified_by, last_modified               (03)
@@ -44,11 +58,28 @@
      leave_type_policies   leave_type_id, beginning_balance,
                            max_balance, backdate_days,
                            max_carry_forward, carry_forward_expiry_month,
-                           carry_forward_expiry_day, modified_by,
-                           last_modified                            (03)
+                           carry_forward_expiry_day, is_prorated,
+                           use_partial_month_tiers, monthly_accrual_days,
+                           eligibility_type, eligibility_years,
+                           service_bonus_interval_years, service_bonus_days,
+                           requires_approval, approver_post_id,
+                           modified_by, last_modified                (03)
+     leave_type_proration_tiers
+                           id, leave_type_id, min_working_days,
+                           credit_days                               (03)
 
    Note: employees is readable only by admins (or your own row), so the
    "by <name>" part of "Last changed" only appears for admins.
+
+   "Annual Leave" is special-cased server-side: 03_policies_schemas.sql's
+   enforce_annual_leave_only_service_bonus trigger rejects a service-length
+   bonus on any OTHER leave type, and the proration-tier seed matches it by
+   exact name. This page has no leave-type rename control at all (renaming
+   still isn't possible from any UI — see LOOKUP_KINDS in employees.js,
+   which doesn't include leave types), so there's nothing to actively guard
+   here; isAnnualLeave() below only gates which fields render, and a
+   "Name locked" flag is shown next to it as a heads-up for whoever adds a
+   rename control later.
    ===================================================================== */
 (function () {
   'use strict';
@@ -63,12 +94,17 @@
   const DAY_ABBR = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const MAX_DAYS = 9999.9;      // numeric(5,1)
   const MAX_BACKDATE = 365;     // smallint in the DB; 365 is a sensible UI ceiling
+  const MAX_YEARS = 99;         // smallint in the DB; sensible UI ceiling for eligibility/service-bonus years
+  const MAX_ACCRUAL = 99.99;    // numeric(4,2)
 
   // Column lists — exactly the columns in 03_policies_schemas.sql.
   const SETTINGS_COLS = 'id, standard_monthly_working_days, year_cutoff_month, year_cutoff_day, modified_by, last_modified';
   const WEEKLY_COLS = 'day_of_week, day_name, working_value, modified_by, last_modified';
   const LEAVE_POLICY_COLS = 'leave_type_id, beginning_balance, max_balance, backdate_days, max_carry_forward, '
-    + 'carry_forward_expiry_month, carry_forward_expiry_day, modified_by, last_modified';
+    + 'carry_forward_expiry_month, carry_forward_expiry_day, is_prorated, use_partial_month_tiers, '
+    + 'monthly_accrual_days, eligibility_type, eligibility_years, service_bonus_interval_years, '
+    + 'service_bonus_days, requires_approval, approver_post_id, modified_by, last_modified';
+  const TIER_COLS = 'id, leave_type_id, min_working_days, credit_days';
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -85,9 +121,18 @@
   let db = null;          // Supabase client
   let readOnly = false;   // true when the viewer is not an admin
   const nameCache = new Map();
+  let positionsList = []; // { post_id, position }[] — for the "Reviewed by" dropdown, loaded once in loadAll()
 
   const sections = { weekly: null, monthly: null, cutoff: null, leaveTypes: [] };
   const allSections = () => [sections.weekly, sections.monthly, sections.cutoff, ...sections.leaveTypes].filter(Boolean);
+
+  // Mirrors the server-side rule in 03_policies_schemas.sql exactly (case-
+  // sensitive match on the trimmed name): the service-length bonus fields
+  // and the proration-tier seed are both tied to this exact leave type.
+  // See the header comment above re: there being no rename control to guard.
+  function isAnnualLeave(lt) {
+    return lt.label === 'Annual Leave';
+  }
 
   /* ------------------------------------------------------------------ */
   /* UI helpers: toasts, error banner                                    */
@@ -223,6 +268,20 @@
       const opt = document.createElement('option');
       opt.value = String(i + 1);
       opt.textContent = name;
+      select.appendChild(opt);
+    });
+  }
+
+  // Populates a "Reviewed by" <select> with the active positions loaded in
+  // loadAll(). The first option ("Employee's direct supervisor", value="")
+  // is already in the markup; this only ever appends, so it's safe to call
+  // once per leave-type item at build time.
+  function fillApprovers(select) {
+    if (!select || select.childElementCount > 1) return;
+    positionsList.forEach((p) => {
+      const opt = document.createElement('option');
+      opt.value = String(p.post_id);
+      opt.textContent = p.position;
       select.appendChild(opt);
     });
   }
@@ -510,7 +569,12 @@
   /* ------------------------------------------------------------------ */
   const DEFAULT_POLICY = {
     beginning_balance: 0, max_balance: null, backdate_days: 0, max_carry_forward: 0,
-    carry_forward_expiry_month: null, carry_forward_expiry_day: null, modified_by: null,
+    carry_forward_expiry_month: null, carry_forward_expiry_day: null,
+    is_prorated: false, use_partial_month_tiers: false, monthly_accrual_days: null,
+    eligibility_type: 'immediate', eligibility_years: null,
+    service_bonus_interval_years: null, service_bonus_days: 0,
+    requires_approval: true, approver_post_id: null,
+    modified_by: null,
   };
 
   // leave_types (02_leaves_schema.sql): leave_type = display name,
@@ -525,22 +589,17 @@
     return row.is_active === false;
   }
 
-  // Reflects a leave type's active state in both the header flag and the
-  // status button. Same enable-disable-not-delete pattern this replaces
-  // from leaves.js: a type is never deleted, since past leave requests
-  // keep referencing it — disabling it only hides it from new requests
-  // (see leaves.js's activeLeaveTypes filter).
+  // Reflects a leave type's active state in the header's status badge,
+  // the item's own background (.is-disabled-type) and the status button.
+  // Same enable-disable-not-delete pattern this replaces from leaves.js: a
+  // type is never deleted, since past leave requests keep referencing it —
+  // disabling it only hides it from new requests (see leaves.js's
+  // activeLeaveTypes filter).
   function paintLeaveTypeStatus(root, disabled) {
-    const nameEl = $('.lt-name', root);
-    let tag = $('.policy-flag--muted', nameEl);
-    if (disabled && !tag) {
-      tag = document.createElement('span');
-      tag.className = 'policy-flag policy-flag--muted';
-      tag.textContent = 'Disabled';
-      nameEl.appendChild(tag);
-    } else if (!disabled && tag) {
-      tag.remove();
-    }
+    root.classList.toggle('is-disabled-type', disabled);
+    const badge = $('[data-lt-status-badge]', root);
+    badge.textContent = disabled ? 'Disabled' : 'Active';
+    badge.className = `lt-state-badge lt-state-badge--${disabled ? 'disabled' : 'active'}`;
     const btn = $('[data-toggle-active]', root);
     btn.textContent = disabled ? 'Enable' : 'Disable';
     btn.classList.toggle('btn-ghost', !disabled);
@@ -561,6 +620,7 @@
       if (!data || !data.length) throw new NoRowsError();
       lt.disabled = !nextActive;
       paintLeaveTypeStatus(root, lt.disabled);
+      refreshLeaveTypeListUI();
       toast(`${lt.label} ${lt.disabled ? 'disabled' : 'enabled'}.`, 'success');
     } catch (err) {
       toast(errorMessage(err), 'danger');
@@ -572,7 +632,7 @@
   function setCell(root, key, text, muted) {
     const span = $(`[data-summary="${key}"]`, root);
     span.textContent = text;
-    span.closest('.lt-cell').classList.toggle('is-muted', !!muted);
+    span.closest('.lt-metric-chip').classList.toggle('is-muted', !!muted);
   }
 
   function renderLeaveSummary(root, v) {
@@ -587,11 +647,101 @@
     setCell(root, 'carry_forward', carry, !v.carry);
   }
 
+  // ---- Proration-tier row helpers (leave_type_proration_tiers) --------
+  // Each row is { id, minDays, credit }; id is null for a row not yet
+  // saved. Order in the DOM is the order read() returns them in, which
+  // matters for the dirty-check (see initLeaveTypeSection's fromRecord).
+  function buildTierRow(t) {
+    const tpl = $('#ltTierRowTemplate');
+    const holder = document.createElement('div');
+    holder.innerHTML = tpl.innerHTML;
+    const row = holder.firstElementChild;
+    if (t.id != null) row.dataset.tierId = String(t.id);
+    $('[data-tier-field="min_working_days"]', row).value = t.minDays == null ? '' : String(t.minDays);
+    $('[data-tier-field="credit_days"]', row).value = t.credit == null ? '' : String(t.credit);
+    $('[data-remove-tier]', row).disabled = readOnly;
+    return row;
+  }
+
+  function readTierRows(listEl) {
+    return $$('.lt-tier-row', listEl).map((row) => ({
+      id: row.dataset.tierId ? Number(row.dataset.tierId) : null,
+      minDays: numOf($('[data-tier-field="min_working_days"]', row)),
+      credit: numOf($('[data-tier-field="credit_days"]', row)),
+    }));
+  }
+
   function initLeaveTypeSection(root, lt) {
     const f = (key) => $(`[data-field="${key}"]`, root);
     const monthSel = f('carry_forward_expiry_month');
     const dayInp = f('carry_forward_expiry_day');
     const id = lt.id;
+    const isAnnual = isAnnualLeave(lt);
+
+    // Eligibility
+    const eligTypeSel = f('eligibility_type');
+    const eligYearsInp = f('eligibility_years');
+    const eligYearsField = $('[data-elig-years-field]', root);
+
+    // Proration
+    const proratedChk = f('is_prorated');
+    const accrualInp = f('monthly_accrual_days');
+    const tiersOnChk = f('use_partial_month_tiers');
+    const prorateFieldsWrap = $('[data-prorate-fields]', root);
+    const tiersEditorWrap = $('[data-tiers-editor]', root);
+    const tiersListEl = $('[data-tiers-list]', root);
+    const addTierBtn = $('[data-add-tier]', root);
+
+    // Service-length bonus — Annual Leave only (see isAnnualLeave() above
+    // and the DB trigger it mirrors). For every other leave type the
+    // fieldset is hidden and its inputs disabled so there's no way to set
+    // a value the save would then have to strip back out.
+    const bonusFieldset = $('[data-service-bonus-field]', root);
+    const bonusIntervalInp = f('service_bonus_interval_years');
+    const bonusDaysInp = f('service_bonus_days');
+    if (!isAnnual) {
+      bonusFieldset.classList.add('hidden');
+      bonusIntervalInp.disabled = true;
+      bonusDaysInp.disabled = true;
+    }
+
+    // Approval routing
+    const requiresApprovalChk = f('requires_approval');
+    const approverField = $('[data-approver-field]', root);
+    const approverSel = f('approver_post_id');
+    fillApprovers(approverSel);
+
+    function toggleEligYearsField() {
+      eligYearsField.classList.toggle('hidden', eligTypeSel.value !== 'after_years');
+    }
+    function toggleProrationFields() {
+      const on = proratedChk.checked;
+      prorateFieldsWrap.classList.toggle('hidden', !on);
+      tiersEditorWrap.classList.toggle('hidden', !(on && tiersOnChk.checked));
+    }
+    function toggleApproverField() {
+      approverField.classList.toggle('hidden', !requiresApprovalChk.checked);
+    }
+    // Structural tier add/remove doesn't touch an <input>, so it can't
+    // reach createSection's root 'input' listener directly — bump it via
+    // an existing field instead, the same way any other edit would.
+    function bumpDirty() {
+      accrualInp.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    addTierBtn.addEventListener('click', () => {
+      if (readOnly) return;
+      const row = buildTierRow({ id: null, minDays: null, credit: null });
+      tiersListEl.appendChild(row);
+      bumpDirty();
+      $('[data-tier-field="min_working_days"]', row).focus();
+    });
+    tiersListEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-remove-tier]');
+      if (!btn || readOnly) return;
+      btn.closest('.lt-tier-row').remove();
+      bumpDirty();
+    });
 
     return createSection({
       root,
@@ -605,6 +755,18 @@
           carry: p.max_carry_forward == null ? null : Number(p.max_carry_forward),
           expMonth: p.carry_forward_expiry_month == null ? null : Number(p.carry_forward_expiry_month),
           expDay: p.carry_forward_expiry_day == null ? null : Number(p.carry_forward_expiry_day),
+          eligType: p.eligibility_type || 'immediate',
+          eligYears: p.eligibility_years == null ? null : Number(p.eligibility_years),
+          isProrated: !!p.is_prorated,
+          useTiers: !!p.use_partial_month_tiers,
+          accrual: p.monthly_accrual_days == null ? null : Number(p.monthly_accrual_days),
+          bonusInterval: isAnnual && p.service_bonus_interval_years != null ? Number(p.service_bonus_interval_years) : null,
+          bonusDays: isAnnual && p.service_bonus_days != null ? Number(p.service_bonus_days) : 0,
+          requiresApproval: p.requires_approval !== false,
+          approverPostId: p.approver_post_id == null ? null : Number(p.approver_post_id),
+          tiers: (p.tiers || []).map((t) => ({
+            id: t.id, minDays: Number(t.min_working_days), credit: Number(t.credit_days),
+          })),
         };
       },
       apply: (v) => {
@@ -615,9 +777,32 @@
         monthSel.value = v.expMonth == null ? '' : String(v.expMonth);
         dayInp.value = v.expMonth == null || v.expDay == null ? '' : String(v.expDay);
         syncDay(monthSel, dayInp, false);
+
+        eligTypeSel.value = v.eligType;
+        eligYearsInp.value = v.eligYears == null ? '' : String(v.eligYears);
+        toggleEligYearsField();
+
+        proratedChk.checked = v.isProrated;
+        accrualInp.value = v.accrual == null ? '' : String(v.accrual);
+        tiersOnChk.checked = v.useTiers;
+        tiersListEl.innerHTML = '';
+        v.tiers.forEach((t) => tiersListEl.appendChild(buildTierRow(t)));
+        toggleProrationFields();
+
+        if (isAnnual) {
+          bonusIntervalInp.value = v.bonusInterval == null ? '' : String(v.bonusInterval);
+          bonusDaysInp.value = String(v.bonusDays);
+        }
+
+        requiresApprovalChk.checked = v.requiresApproval;
+        approverSel.value = v.approverPostId == null ? '' : String(v.approverPostId);
+        toggleApproverField();
       },
       read: () => {
         const expMonth = monthSel.value ? Number(monthSel.value) : null;
+        const eligType = eligTypeSel.value;
+        const isProrated = proratedChk.checked;
+        const requiresApproval = requiresApprovalChk.checked;
         return {
           beginning: numOf(f('beginning_balance')),
           max: numOf(f('max_balance')),
@@ -625,9 +810,24 @@
           carry: numOf(f('max_carry_forward')),
           expMonth,
           expDay: expMonth ? numOf(dayInp) : null,
+          eligType,
+          eligYears: eligType === 'after_years' ? numOf(eligYearsInp) : null,
+          isProrated,
+          useTiers: isProrated ? tiersOnChk.checked : false,
+          accrual: numOf(accrualInp),
+          bonusInterval: isAnnual ? numOf(bonusIntervalInp) : null,
+          bonusDays: isAnnual ? (numOf(bonusDaysInp) ?? 0) : 0,
+          requiresApproval,
+          approverPostId: requiresApproval && approverSel.value ? Number(approverSel.value) : null,
+          tiers: readTierRows(tiersListEl),
         };
       },
-      onEdit: (el) => { if (el === monthSel) syncDay(monthSel, dayInp, true); },
+      onEdit: (el) => {
+        if (el === monthSel) syncDay(monthSel, dayInp, true);
+        else if (el === eligTypeSel) toggleEligYearsField();
+        else if (el === proratedChk || el === tiersOnChk) toggleProrationFields();
+        else if (el === requiresApprovalChk) toggleApproverField();
+      },
       validate: (v) => {
         const problems = [];
         const add = (key, msg) => msg && problems.push({ el: f(key), msg });
@@ -644,27 +844,120 @@
           const msg = monthDayProblem('Lapse date', v.expMonth, v.expDay);
           if (msg) problems.push({ el: dayInp, msg });
         }
+
+        if (v.eligType === 'after_years'
+          && (v.eligYears == null || !Number.isInteger(v.eligYears) || v.eligYears < 1 || v.eligYears > MAX_YEARS)) {
+          add('eligibility_years', `Years of service: enter a whole number from 1 to ${MAX_YEARS}.`);
+        }
+
+        if (v.accrual != null && (!Number.isFinite(v.accrual) || v.accrual < 0 || v.accrual > MAX_ACCRUAL)) {
+          add('monthly_accrual_days', `Full-month credit must be between 0 and ${MAX_ACCRUAL} days.`);
+        }
+
+        if (v.tiers.length) {
+          const seen = new Set();
+          $$('.lt-tier-row', tiersListEl).forEach((row, i) => {
+            const t = v.tiers[i];
+            const minEl = $('[data-tier-field="min_working_days"]', row);
+            const creditEl = $('[data-tier-field="credit_days"]', row);
+            if (t.minDays == null || !Number.isInteger(t.minDays) || t.minDays < 0 || t.minDays > 31) {
+              problems.push({ el: minEl, msg: 'Tier: working days remaining must be a whole number from 0 to 31.' });
+            } else if (seen.has(t.minDays)) {
+              problems.push({ el: minEl, msg: 'Tier: each threshold can only be used once.' });
+            } else {
+              seen.add(t.minDays);
+            }
+            const creditMsg = daysProblem('Tier credit', t.credit, true);
+            if (creditMsg) problems.push({ el: creditEl, msg: creditMsg });
+          });
+        }
+
+        if (isAnnual) {
+          if (v.bonusInterval != null
+            && (!Number.isInteger(v.bonusInterval) || v.bonusInterval < 1 || v.bonusInterval > MAX_YEARS)) {
+            add('service_bonus_interval_years', `Service bonus: "every" must be a whole number of years from 1 to ${MAX_YEARS} (leave blank for no bonus).`);
+          }
+          const bonusDaysMsg = daysProblem('Service bonus days', v.bonusDays, true);
+          if (bonusDaysMsg) add('service_bonus_days', bonusDaysMsg);
+        }
+
         return problems;
       },
       renderSummary: (v) => renderLeaveSummary(root, v),
-      save: async (v) => {
-        const patch = {
-          beginning_balance: v.beginning,
-          max_balance: v.max,
-          backdate_days: v.backdate,
-          max_carry_forward: v.carry,
-          carry_forward_expiry_month: v.expMonth,
-          carry_forward_expiry_day: v.expMonth ? v.expDay : null,
-        };
-        const upd = await db.from('leave_type_policies').update(patch).eq('leave_type_id', id).select(LEAVE_POLICY_COLS);
-        if (upd.error) throw upd.error;
-        if (upd.data && upd.data.length) return upd.data[0];
-        // No row yet (normally created by trigger/seed): create it. For a
-        // non-admin this is blocked by RLS, which surfaces as a permission error.
-        const ins = await db.from('leave_type_policies').insert({ leave_type_id: id, ...patch }).select(LEAVE_POLICY_COLS);
-        if (ins.error) throw ins.error;
-        if (!ins.data || !ins.data.length) throw new NoRowsError();
-        return ins.data[0];
+      save: async (v, prev) => {
+        addTierBtn.disabled = true;
+        $$('[data-remove-tier]', tiersListEl).forEach((btn) => { btn.disabled = true; });
+        try {
+          const patch = {
+            beginning_balance: v.beginning,
+            max_balance: v.max,
+            backdate_days: v.backdate,
+            max_carry_forward: v.carry,
+            carry_forward_expiry_month: v.expMonth,
+            carry_forward_expiry_day: v.expMonth ? v.expDay : null,
+            eligibility_type: v.eligType,
+            eligibility_years: v.eligYears,
+            is_prorated: v.isProrated,
+            use_partial_month_tiers: v.useTiers,
+            monthly_accrual_days: v.accrual,
+            service_bonus_interval_years: v.bonusInterval,
+            service_bonus_days: v.bonusDays,
+            requires_approval: v.requiresApproval,
+            approver_post_id: v.approverPostId,
+          };
+          const upd = await db.from('leave_type_policies').update(patch).eq('leave_type_id', id).select(LEAVE_POLICY_COLS);
+          if (upd.error) throw upd.error;
+          let record;
+          if (upd.data && upd.data.length) {
+            record = upd.data[0];
+          } else {
+            // No row yet (normally created by trigger/seed): create it. For a
+            // non-admin this is blocked by RLS, which surfaces as a permission error.
+            const ins = await db.from('leave_type_policies').insert({ leave_type_id: id, ...patch }).select(LEAVE_POLICY_COLS);
+            if (ins.error) throw ins.error;
+            if (!ins.data || !ins.data.length) throw new NoRowsError();
+            record = ins.data[0];
+          }
+
+          // Proration tiers live in their own table, diffed against what was
+          // last loaded/saved. v.tiers is mutated in place with server-
+          // assigned ids for new rows, and the matching DOM row is stamped
+          // too, so the next read() agrees with `saved` (see createSection's
+          // save(): `saved = values` reuses this same object by reference).
+          const prevById = new Map((prev.tiers || []).filter((t) => t.id != null).map((t) => [t.id, t]));
+          const keepIds = new Set();
+          const rows = $$('.lt-tier-row', tiersListEl);
+          for (let i = 0; i < v.tiers.length; i++) {
+            const t = v.tiers[i];
+            if (t.id != null) {
+              keepIds.add(t.id);
+              const before = prevById.get(t.id);
+              if (before && (before.minDays !== t.minDays || before.credit !== t.credit)) {
+                const { error } = await db.from('leave_type_proration_tiers')
+                  .update({ min_working_days: t.minDays, credit_days: t.credit })
+                  .eq('id', t.id);
+                if (error) throw error;
+              }
+            } else {
+              const { data, error } = await db.from('leave_type_proration_tiers')
+                .insert({ leave_type_id: id, min_working_days: t.minDays, credit_days: t.credit })
+                .select('id');
+              if (error) throw error;
+              t.id = data[0].id;
+              if (rows[i]) rows[i].dataset.tierId = String(t.id);
+            }
+          }
+          const toDelete = [...prevById.keys()].filter((tid) => !keepIds.has(tid));
+          if (toDelete.length) {
+            const { error } = await db.from('leave_type_proration_tiers').delete().in('id', toDelete);
+            if (error) throw error;
+          }
+
+          return record;
+        } finally {
+          addTierBtn.disabled = readOnly;
+          $$('[data-remove-tier]', tiersListEl).forEach((btn) => { btn.disabled = readOnly; });
+        }
       },
     });
   }
@@ -673,12 +966,22 @@
   // and its enable/disable button, and loads it with a policy row (or
   // null, for a brand-new leave type that has no policy yet). Shared by
   // the initial render and by onAddLeaveType() below.
-  function buildLeaveTypeItem(lt, policyRow, openByDefault) {
+  function buildLeaveTypeItem(lt, policyRow, tierRows, openByDefault) {
     const tpl = $('#ltItemTemplate');
     const holder = document.createElement('div');
     holder.innerHTML = tpl.innerHTML.split('{{id}}').join(String(lt.id));
     const root = holder.firstElementChild;
     $('[data-lt-name]', root).textContent = lt.label;
+    if (isAnnualLeave(lt)) {
+      const lock = document.createElement('span');
+      lock.className = 'policy-flag policy-flag--muted';
+      lock.title = 'This name is relied on by the proration seed and the '
+        + 'service-bonus rule in 03_policies_schemas.sql. There\u2019s no '
+        + 'rename control for leave types anywhere in this app today, but '
+        + 'if one is ever added, "Annual Leave" must stay excluded from it.';
+      lock.textContent = 'Name locked';
+      $('.lt-name', root).appendChild(lock);
+    }
     paintLeaveTypeStatus(root, lt.disabled);
     const statusBtn = $('[data-toggle-active]', root);
     statusBtn.disabled = readOnly;
@@ -693,24 +996,90 @@
       $('.collapse', root).classList.add('show');
     }
     const section = initLeaveTypeSection(root, lt);
-    section.load(policyRow || null);
+    const record = policyRow ? { ...policyRow, tiers: tierRows || [] } : (tierRows && tierRows.length ? { ...DEFAULT_POLICY, tiers: tierRows } : null);
+    section.load(record);
     sections.leaveTypes.push(section);
     return root;
   }
 
-  function renderLeaveTypes(types, policies) {
+  function renderLeaveTypes(types, policies, tiersByType) {
     const list = $('#ltList');
     $$('.lt-item', list).forEach((el) => el.remove());
     sections.leaveTypes = [];
 
     types.forEach((lt, index) => {
       // First item starts open, as in the design.
-      list.appendChild(buildLeaveTypeItem(lt, policies.get(lt.id), index === 0));
+      list.appendChild(buildLeaveTypeItem(lt, policies.get(lt.id), tiersByType.get(lt.id), index === 0));
     });
 
     $('#ltLoading').classList.add('hidden');
     list.classList.toggle('hidden', types.length === 0);
-    $('#leaveTypesEmpty').classList.toggle('hidden', types.length !== 0);
+    refreshLeaveTypeListUI();
+  }
+
+  /* ---- Leave-type list UI: quick stats, search, status filter -------- */
+  // State for the search box and status-filter pills above #ltList. Kept
+  // in module scope (not per-item) since one search/filter applies to the
+  // whole list.
+  let ltSearch = '';              // lower-cased text from #ltSearchInput
+  let ltStatusFilter = 'all';     // 'all' | 'active' | 'disabled', from [data-lt-filter]
+
+  // Recomputes which items match the current search/filter, updates the
+  // Total/Active/Disabled stat chips, and shows the empty state when
+  // nothing matches. Driven entirely off the DOM (.is-disabled-type, set
+  // by paintLeaveTypeStatus) rather than a parallel data structure, so it
+  // can be called after any mutation — render, add, or toggle — without
+  // needing to know what changed.
+  function refreshLeaveTypeListUI() {
+    const list = $('#ltList');
+    const items = $$('.lt-item', list);
+    let activeCount = 0;
+
+    items.forEach((item) => {
+      const disabled = item.classList.contains('is-disabled-type');
+      if (!disabled) activeCount++;
+
+      const name = ($('[data-lt-name]', item) || {}).textContent || '';
+      const matchesSearch = !ltSearch || name.toLowerCase().includes(ltSearch);
+      const matchesFilter = ltStatusFilter === 'all'
+        || (ltStatusFilter === 'active' && !disabled)
+        || (ltStatusFilter === 'disabled' && disabled);
+      item.classList.toggle('is-hidden-by-filter', !(matchesSearch && matchesFilter));
+    });
+
+    const total = items.length;
+    const totalEl = $('#ltTotalCount');
+    if (totalEl) totalEl.textContent = String(total);
+    const activeEl = $('#ltActiveCount');
+    if (activeEl) activeEl.textContent = String(activeCount);
+    const disabledEl = $('#ltDisabledCount');
+    if (disabledEl) disabledEl.textContent = String(total - activeCount);
+
+    const hasVisible = items.some((item) => !item.classList.contains('is-hidden-by-filter'));
+    const empty = $('#leaveTypesEmpty');
+    list.classList.toggle('hidden', total === 0);
+    empty.classList.toggle('hidden', total === 0 || hasVisible);
+    empty.textContent = total === 0
+      ? 'No leave types yet. Add one above and it will appear here with its own policy to set.'
+      : 'No leave types match your search or filter.';
+  }
+
+  function initLeaveTypeListControls() {
+    const searchInput = $('#ltSearchInput');
+    if (searchInput) {
+      searchInput.addEventListener('input', () => {
+        ltSearch = searchInput.value.trim().toLowerCase();
+        refreshLeaveTypeListUI();
+      });
+    }
+    $$('[data-lt-filter]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        $$('[data-lt-filter]').forEach((b) => b.classList.remove('is-active'));
+        btn.classList.add('is-active');
+        ltStatusFilter = btn.dataset.ltFilter;
+        refreshLeaveTypeListUI();
+      });
+    });
   }
 
   // ---- Add leave type -------------------------------------------------
@@ -738,9 +1107,8 @@
       const row = data[0];
       const lt = { id: row.leave_type_id, label: leaveTypeLabel(row), disabled: leaveTypeIsDisabled(row) };
       const list = $('#ltList');
-      list.appendChild(buildLeaveTypeItem(lt, null, false));
-      list.classList.remove('hidden');
-      $('#leaveTypesEmpty').classList.add('hidden');
+      list.appendChild(buildLeaveTypeItem(lt, null, null, false));
+      refreshLeaveTypeListUI();
       input.value = '';
       toast(`"${lt.label}" added.`, 'success');
     } catch (err) {
@@ -764,19 +1132,23 @@
   }
 
   async function loadAll() {
-    const [settings, weekly, types, policies] = await Promise.all([
+    const [settings, weekly, types, policies, tiers, positions] = await Promise.all([
       db.from('policy_settings').select(SETTINGS_COLS).eq('id', 1).maybeSingle(),
       db.from('policy_weekly_working_days').select(WEEKLY_COLS).order('day_of_week'),
       db.from('leave_types').select('leave_type_id, leave_type, is_active').order('leave_type'),
       db.from('leave_type_policies').select(LEAVE_POLICY_COLS),
+      db.from('leave_type_proration_tiers').select(TIER_COLS),
+      db.from('positions').select('post_id, position').eq('is_active', true).order('position'),
     ]);
-    const failed = [settings, weekly, types, policies].find((r) => r.error);
+    const failed = [settings, weekly, types, policies, tiers, positions].find((r) => r.error);
     if (failed) throw failed.error;
 
     const weeklyRows = weekly.data || [];
     if (!settings.data || weeklyRows.length !== 7) {
       throw new Error('No policy data found. Check that 03_policies_schemas.sql has been run, or sign in again if your session expired.');
     }
+
+    positionsList = positions.data || [];
 
     const policyRows = policies.data || [];
     await ensureNames([
@@ -789,6 +1161,15 @@
     sections.monthly.load(settings.data);
     sections.cutoff.load(settings.data);
 
+    const tiersByType = new Map();
+    (tiers.data || []).forEach((t) => {
+      if (!tiersByType.has(t.leave_type_id)) tiersByType.set(t.leave_type_id, []);
+      tiersByType.get(t.leave_type_id).push(t);
+    });
+    // Highest threshold first, matching how the rule reads ("the highest
+    // threshold met") — purely a display default, not load-bearing.
+    tiersByType.forEach((rows) => rows.sort((a, b) => b.min_working_days - a.min_working_days));
+
     const leaveTypes = (types.data || [])
       .map((row) => ({
         id: row.leave_type_id,
@@ -796,13 +1177,16 @@
         disabled: leaveTypeIsDisabled(row),
       }))
       .sort((a, b) => a.label.localeCompare(b.label));
-    renderLeaveTypes(leaveTypes, new Map(policyRows.map((r) => [r.leave_type_id, r])));
+    renderLeaveTypes(leaveTypes, new Map(policyRows.map((r) => [r.leave_type_id, r])), tiersByType);
   }
 
   function applyReadOnly() {
     $('.policies-page').classList.add('is-readonly');
     $('#policiesReadOnly').classList.remove('hidden');
-    $$('#policyPanes input, #policyPanes select, #policyPanes [data-toggle-active], #addLeaveTypeBtn').forEach((el) => { el.disabled = true; });
+    // #ltSearchInput is deliberately excluded: searching/filtering the list
+    // isn't an edit, so it stays usable for a read-only viewer.
+    $$('#policyPanes input:not(#ltSearchInput), #policyPanes select, #policyPanes [data-toggle-active], #policyPanes [data-add-tier], #policyPanes [data-remove-tier], #addLeaveTypeBtn')
+      .forEach((el) => { el.disabled = true; });
     allSections().forEach((s) => s.repaint());
   }
 
@@ -844,6 +1228,7 @@
     initWeekly();
     initMonthly();
     initCutoff();
+    initLeaveTypeListControls();
 
     const addBtn = $('#addLeaveTypeBtn');
     const addInput = $('#newLeaveTypeInput');
