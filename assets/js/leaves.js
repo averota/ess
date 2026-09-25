@@ -55,7 +55,6 @@
 //     what actually enforces this isn't usable by a non-admin, not RLS.
 // =====================================================================
 
-let leaveRequestModal;
 let leaveDetailModal;
 
 let myEmployeeId = null;   // employees.id (uuid) — not the human-readable employee_id
@@ -63,10 +62,8 @@ let myEmployeeName = '';
 let isAdmin = false;
 let initialized = false;    // guards against ess:ready firing more than once (would double-wire every listener)
 
-let leaveTypes = [];        // all rows (active + inactive), for the admin manage-types list
-let activeLeaveTypes = [];  // active-only, for the request form's select
-let weeklyWorkingDays = new Map(); // day_of_week (1=Mon..7=Sun, ISO) -> working_value (0 / 0.5 / 1), from policy_weekly_working_days — lets updateDaysPreview() mirror calculate_leave_request_total_days() exactly instead of just counting calendar days
-let selectableEmployees = []; // who I can file a request for, besides myself — admin: everyone; everyone else: everyone in the same department, their own supervisor included (see list_my_leave_delegates())
+let leaveTypes = [];        // all rows (active + inactive), for the admin manage-types list and the Leave type filter
+let selectableEmployees = []; // used to resolve a teammate's name when RLS hides their row (requestEmployee()/requesterOf()) — admin: everyone; everyone else: everyone in the same department, their own supervisor included (see list_my_leave_delegates())
 let myReportIds = new Set(); // employees.id of my direct reports (non-admin only; admins already have authority over everyone)
 let reviewCommentSupported = true;    // flipped off if leave_requests.review_comment doesn't exist yet (see loadRequests)
 let supervisorEmbedSupported = true; // flipped off if PostgREST can't resolve the nested supervisor lookup (see loadRequests)
@@ -75,9 +72,6 @@ let requesterByRequest = new Map(); // leave_requests.id -> who filed it {id, na
 let requesterRpcSupported = true;   // flipped off if list_leave_requesters() isn't installed (see loadRequesterDirectory)
 let approverRpcSupported = true;    // flipped off if list_leave_approvers() isn't installed (see loadApproverDirectory)
 let allRequests = [];       // everything RLS lets me see: mine + (if supervisor/admin) my team's
-
-let showOnBehalfField = false; // set by populateEmployeeSelect() — whether the "Requesting for" picker has anything besides "Myself" to offer
-let editingRequestId = null;   // set while the modal is editing an existing request instead of creating a new one
 
 const STATUS_LABEL = { 0: 'Pending', 1: 'Approved', 2: 'Rejected', 3: 'Cancelled' };
 const STATUS_CLASS = { 0: 'is-pending', 1: 'is-approved', 2: 'is-rejected', 3: 'is-cancelled' };
@@ -114,45 +108,6 @@ function formatDateTime(iso) {
     const d = iso ? new Date(iso) : null;
     if (!d || isNaN(d)) return '';
     return d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
-}
-
-// Plain string comparison works here since dates are always 'YYYY-MM-DD'
-// (lexicographic order == chronological order for that format).
-function dateRangesOverlap(aStart, aEnd, bStart, bEnd) {
-    return aStart <= bEnd && bStart <= aEnd;
-}
-
-// Client-side heads-up only — checks whole-day overlap (not AM/PM) for
-// the given employee against requests already in `allRequests` that are
-// still pending or approved (status 0/1; cancelled/rejected don't
-// block), across every leave type, excluding `excludeId` so editing a
-// request doesn't flag itself.
-//
-// IMPORTANT: this can only warn about overlaps the current user's RLS
-// visibility actually includes — mine, or (if I'm their supervisor or
-// an admin) a team member's. A non-admin filing on behalf of a same-
-// department teammate they don't supervise (list_my_leave_delegates())
-// won't have that teammate's existing requests in `allRequests`, so
-// this check can't catch a conflict there. The real backstop is the
-// leave_requests_no_overlap exclusion constraint in
-// 03_leave_requests_no_overlap.sql, which always applies server-side
-// regardless of what the client can see.
-function findOverlappingRequest(employeeId, startDate, endDate, excludeId = null) {
-    return allRequests.find(r =>
-        r.employee_id === employeeId &&
-        r.id !== excludeId &&
-        (r.status === 0 || r.status === 1) &&
-        dateRangesOverlap(startDate, endDate, r.start_date, r.end_date)
-    ) || null;
-}
-
-function describeOverlap(req) {
-    const range = req.start_date === req.end_date
-        ? formatDateShort(req.start_date)
-        : `${formatDateShort(req.start_date)} – ${formatDateShort(req.end_date)}`;
-    const type = embedded(req.leave_type, 'leave_type') || 'leave';
-    const statusWord = req.status === 0 ? 'pending' : 'approved';
-    return `${range} (${type}, ${statusWord})`;
 }
 
 // Embedded relations (e.g. `employee:employee_id(name)`) can come back
@@ -376,25 +331,9 @@ const teamRequestsPendingPill = document.getElementById('teamRequestsPendingPill
 const myRequestsBody = document.getElementById('myRequestsBody');
 const teamRequestsBody = document.getElementById('teamRequestsBody');
 
-const leaveRequestForm = document.getElementById('leaveRequestForm');
-const leaveRequestModalTitle = document.getElementById('leaveRequestModalTitle');
-const onBehalfOfField = document.getElementById('onBehalfOfField');
-const onBehalfOfHint = document.getElementById('onBehalfOfHint');
-const requestEmployeeSelect = document.getElementById('requestEmployeeSelect');
-const editingForBanner = document.getElementById('editingForBanner');
-const editingForText = document.getElementById('editingForText');
-const leaveTypeInput = document.getElementById('leaveTypeInput');
-const startDateInput = document.getElementById('startDateInput');
-const startHalfDayInput = document.getElementById('startHalfDayInput');
-const endDateInput = document.getElementById('endDateInput');
-const endHalfDayInput = document.getElementById('endHalfDayInput');
-const reasonInput = document.getElementById('reasonInput');
-const daysPreview = document.getElementById('daysPreview');
-const manualDaysField = document.getElementById('manualDaysField');
-const manualDaysToggle = document.getElementById('manualDaysToggle');
-const manualDaysInputWrap = document.getElementById('manualDaysInputWrap');
-const manualDaysInput = document.getElementById('manualDaysInput');
-const leaveRequestSubmitBtn = document.getElementById('leaveRequestSubmitBtn');
+// New/edit leave request modal (#leaveRequestModal) is owned end-to-end
+// by the shared assets/js/leaveRequestModal.js — see LeaveRequestModal
+// below, wired in init().
 
 const leaveDetailModalEl = document.getElementById('leaveDetailModal');
 const leaveDetailStatus = document.getElementById('leaveDetailStatus');
@@ -449,12 +388,24 @@ async function onEssReady(e) {
 }
 
 async function init() {
-    leaveRequestModal = new bootstrap.Modal(document.getElementById('leaveRequestModal'));
     leaveDetailModal = new bootstrap.Modal(leaveDetailModalEl);
 
     wireEvents();
     populateYearFilter();
-    manualDaysField.classList.toggle('hidden', !isAdmin);
+
+    // The New/edit request modal is a shared component (also used by
+    // calendar.html) — it loads its own copy of leave types / delegates
+    // and owns all of its own submit/validation logic; see
+    // assets/js/leaveRequestModal.js. onSubmitted just refreshes this
+    // page's own list.
+    await LeaveRequestModal.init({
+        sb,
+        isAdmin,
+        myEmployeeId,
+        myEmployeeName,
+        showToast,
+        onSubmitted: () => loadRequests()
+    });
 
     // Request rows carry their own embedded leave_type / employee names,
     // so the lookups and the requests load together — except that
@@ -462,12 +413,9 @@ async function init() {
     // reports, so the requests fetch waits on that one (skipped for admins).
     await Promise.all([
         loadLeaveTypes(),
-        loadWeeklyWorkingDays(),
         loadSelectableEmployees(),
         loadMyReports().then(loadRequests)
     ]);
-    populateLeaveTypeSelect();
-    populateEmployeeSelect();
     populateLeaveTypeFilter();
 
     // Requests can arrive before the teammate list does, and teammate names
@@ -479,13 +427,8 @@ async function init() {
 
 function wireEvents() {
     refreshListBtn.addEventListener('click', onRefreshClick);
-    newRequestBtn.addEventListener('click', () => openLeaveRequestModal());
+    newRequestBtn.addEventListener('click', () => LeaveRequestModal.openNew());
     exportExcelBtn.addEventListener('click', onExportExcelClick);
-    leaveRequestForm.addEventListener('submit', onSubmitLeaveRequest);
-    [startDateInput, endDateInput, startHalfDayInput, endHalfDayInput].forEach(el =>
-        el.addEventListener('change', onDateOrHalfDayChange)
-    );
-    manualDaysToggle.addEventListener('change', onManualDaysToggleChange);
 
     filterYearInput.addEventListener('change', applyFilters);
     filterStatusInput.addEventListener('change', applyFilters);
@@ -616,27 +559,6 @@ async function loadLeaveTypes() {
         return;
     }
     leaveTypes = data || [];
-    activeLeaveTypes = leaveTypes.filter(t => t.is_active !== false);
-}
-
-// The weekly working-day pattern from the Policies page (file
-// 03_policies_schemas.sql), used only to make the request form's day
-// preview match what calculate_leave_request_total_days() will actually
-// save server-side — see updateDaysPreview()/computeWorkingDays() below.
-// Read access is open to any signed-in user (policy_weekly_working_days_read),
-// same as the request form already relies on for back-date checks etc.
-// On failure, computeWorkingDays() falls back to a plain calendar-day
-// count rather than blocking the form.
-async function loadWeeklyWorkingDays() {
-    const { data, error } = await sb
-        .from('policy_weekly_working_days')
-        .select('day_of_week, working_value');
-    if (error) {
-        console.error('leaves: could not load weekly working-day policy:', error);
-        weeklyWorkingDays = new Map();
-        return;
-    }
-    weeklyWorkingDays = new Map((data || []).map(d => [d.day_of_week, Number(d.working_value)]));
 }
 
 // Direct reports: the employees I can review leave for as their supervisor.
@@ -683,18 +605,6 @@ async function loadSelectableEmployees() {
         return;
     }
     selectableEmployees = data || [];
-}
-
-// `includeId`: when editing a request whose leave type has since been
-// disabled, that one type is kept in the list so the select can still
-// show (and re-submit) the request's current value.
-function populateLeaveTypeSelect(includeId = null) {
-    const selectable = includeId == null
-        ? activeLeaveTypes
-        : leaveTypes.filter(t => t.is_active !== false || String(t.leave_type_id) === String(includeId));
-    leaveTypeInput.innerHTML = selectable
-        .map(t => `<option value="${t.leave_type_id}">${escapeHtml(t.leave_type)}</option>`)
-        .join('');
 }
 
 // ---------------------------------------------------------------------
@@ -840,7 +750,7 @@ function syncEmployeeFilterVisibility() {
     // something once I can file for others, or someone has filed leave for
     // me (or I already have), so it stays hidden until then. If it's hidden its value is reset, so a stale pick
     // can never keep filtering rows behind the user's back.
-    const canFileForOthers = showOnBehalfField ||
+    const canFileForOthers = isAdmin || selectableEmployees.some(emp => emp.id !== myEmployeeId) ||
         allRequests.some(r => isMineRequest(r) && requestScope(r) !== 'own');
     const showScope = !isTeamTabActive() && canFileForOthers;
     filterScopeInput.classList.toggle('hidden', !showScope);
@@ -884,24 +794,6 @@ function updateActiveFilterBadge() {
     activeFilterCount.textContent = String(count);
     activeFilterCount.classList.toggle('d-none', count === 0);
     clearAllFiltersBtn.disabled = count === 0;
-}
-
-function populateEmployeeSelect() {
-    const others = selectableEmployees.filter(emp => emp.id !== myEmployeeId);
-
-    const options = [`<option value="${myEmployeeId}">Myself (${escapeHtml(myEmployeeName)})</option>`]
-        .concat(others.map(emp => `<option value="${emp.id}">${escapeHtml(emp.name)} (${escapeHtml(emp.employee_id)})</option>`));
-    requestEmployeeSelect.innerHTML = options.join('');
-
-    // Nothing to hide behind "Myself" for a non-admin with no eligible
-    // teammates (e.g. sole member of their department) — skip the field
-    // entirely rather than show a picker with one option.
-    showOnBehalfField = isAdmin || others.length > 0;
-    onBehalfOfField.classList.toggle('hidden', !showOnBehalfField);
-
-    onBehalfOfHint.textContent = isAdmin
-        ? 'Choosing anyone other than yourself creates the request already approved.'
-        : 'You can also file this for anyone in your department, including your supervisor — it stays pending, same as your own requests, and needs their supervisor\u2019s approval.';
 }
 
 // ---------------------------------------------------------------------
@@ -1277,8 +1169,14 @@ function initRowDropdowns(container) {
     });
 }
 
+function openEditRequestModal(id) {
+    const req = allRequests.find(r => r.id === id);
+    if (!req) return;
+    LeaveRequestModal.openEdit(req, `Editing request for ${formatEmployeeName(requestEmployee(req))}`);
+}
+
 const ROW_ACTIONS = {
-    edit: (id) => openLeaveRequestModal(id),
+    edit: (id) => openEditRequestModal(id),
     cancel: (id) => onCancelRequest(id),
     adminCancel: (id) => onAdminCancelRequest(id),
     approve: (id) => onReviewRequest(id, 'approved'),
@@ -1558,315 +1456,6 @@ function renderDetailActions(r) {
         : '';
     initRowDropdowns(leaveDetailActions);
     leaveDetailCloseBtn.classList.toggle('hidden', keys.length > 0);
-}
-
-// ---------------------------------------------------------------------
-// New / edit request modal
-// ---------------------------------------------------------------------
-// Pass a request id (from a row's Edit button) to open in edit mode
-// instead of creating a new request.
-function openLeaveRequestModal(requestId = null) {
-    leaveRequestForm.reset();
-    editingRequestId = requestId;
-
-    // reset() clears the checkbox/number input themselves, but not the
-    // JS-controlled "hidden" class on the wrapper — always start closed,
-    // then reopen it below for a request that's actually overridden.
-    manualDaysToggle.checked = false;
-    manualDaysInputWrap.classList.add('hidden');
-    manualDaysInput.value = '';
-
-    if (requestId) {
-        const req = allRequests.find(r => r.id === requestId);
-        if (!req) return;
-
-        populateLeaveTypeSelect(req.leave_type_id);
-        leaveRequestModalTitle.textContent = 'Edit leave request';
-        leaveRequestSubmitBtn.textContent = 'Save changes';
-
-        onBehalfOfField.classList.add('hidden');
-        editingForBanner.classList.remove('hidden');
-        editingForText.textContent = `Editing request for ${formatEmployeeName(requestEmployee(req))}`;
-
-        leaveTypeInput.value = String(req.leave_type_id);
-        startDateInput.value = req.start_date;
-        startHalfDayInput.value = req.start_half_day;
-        endDateInput.value = req.end_date;
-        endHalfDayInput.value = req.end_half_day;
-        reasonInput.value = req.reason || '';
-        syncEndHalfDayField();
-        updateDaysPreview();
-
-        // Already manually overridden (admin-only field, but harmless to
-        // set even if hidden for a non-admin viewer): show it pre-filled
-        // with the existing total rather than the recalculated one, so
-        // reopening the modal doesn't look like it silently changed.
-        if (isAdmin && req.total_days_manual) {
-            manualDaysToggle.checked = true;
-            manualDaysInputWrap.classList.remove('hidden');
-            manualDaysInput.value = Number(req.total_days);
-        }
-    } else {
-        populateLeaveTypeSelect();
-        leaveRequestModalTitle.textContent = 'New leave request';
-        leaveRequestSubmitBtn.textContent = 'Submit request';
-
-        editingForBanner.classList.add('hidden');
-        onBehalfOfField.classList.toggle('hidden', !showOnBehalfField);
-        if (showOnBehalfField) requestEmployeeSelect.value = myEmployeeId;
-
-        startHalfDayInput.value = 'full';
-        endHalfDayInput.value = 'full';
-        syncEndHalfDayField();
-        daysPreview.textContent = '';
-    }
-
-    leaveRequestModal.show();
-}
-
-// JS Date#getDay() is 0=Sun..6=Sat; policy_weekly_working_days.day_of_week
-// is ISO (1=Mon..7=Sun), matching the server's extract(isodow from ...).
-function isoDayOfWeek(date) {
-    return ((date.getDay() + 6) % 7) + 1;
-}
-
-// Same boundary rules as calculate_leave_request_total_days() in
-// 02_leaves_schema.sql — see "Half-day model" there for the full
-// reasoning and worked examples. In short: start_half_day/end_half_day
-// mark WHERE in their date the request begins/ends, not "which half of
-// this one day":
-//   - an interior date (strictly between start and end) is always whole
-//   - the single-day case (start_date = end_date) is whole only if it
-//     both starts from AM/full (not PM) AND ends through PM/full (not
-//     AM) — so AM->PM is a whole day, AM->AM or PM->PM is a half day
-//   - the start date of a multi-day request is whole unless start_half
-//     is 'pm' (then only that date's afternoon counts)
-//   - the end date of a multi-day request is whole unless end_half is
-//     'am' (then only that date's morning counts)
-function isWholeDayRequested(date, startD, endD, startHalf, endHalf) {
-    const isStart = date.getTime() === startD.getTime();
-    const isEnd = date.getTime() === endD.getTime();
-    if (!isStart && !isEnd) return true;
-    if (isStart && isEnd) return startHalf !== 'pm' && endHalf !== 'am';
-    if (isStart) return startHalf !== 'pm';
-    return endHalf !== 'am';
-}
-
-// Mirrors calculate_leave_request_total_days() exactly, so the preview
-// the person sees before submitting matches what the trigger will
-// actually save. Falls back to treating every day as a normal full
-// working day (working_value = 1) if the weekly policy failed to load,
-// so the form still gives a correct estimate rather than none — just
-// without knowing which days are off.
-function computeWorkingDays(startD, endD, startHalf, endHalf) {
-    let total = 0;
-    for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
-        const working = weeklyWorkingDays.size ? (weeklyWorkingDays.get(isoDayOfWeek(d)) ?? 0) : 1;
-        const whole = isWholeDayRequested(d, startD, endD, startHalf, endHalf);
-        total += whole ? working : Math.min(working, 0.5);
-    }
-    return total;
-}
-
-// Same-day + start = 'full' means the whole date either way — the End
-// field has nothing meaningful left to choose, so it's locked to 'full'
-// and disabled instead of asking the person to redundantly confirm it.
-// Any other combination (different dates, or a half-day start) leaves
-// End free to pick.
-function syncEndHalfDayField() {
-    const sameDay = !!startDateInput.value && startDateInput.value === endDateInput.value;
-    const lock = sameDay && startHalfDayInput.value === 'full';
-    endHalfDayInput.disabled = lock;
-    if (lock) endHalfDayInput.value = 'full';
-}
-
-function onDateOrHalfDayChange() {
-    syncEndHalfDayField();
-    updateDaysPreview();
-}
-
-// Client-side preview only — total_days is always authoritative from
-// calculate_leave_request_total_days() server-side (unless an admin's
-// manual override is active, see onManualDaysToggleChange()); this just
-// mirrors that formula, working days only, so the person sees an
-// accurate estimate before submitting instead of a raw calendar-day
-// count that includes weekends/days off.
-function updateDaysPreview() {
-    const start = startDateInput.value;
-    const end = endDateInput.value;
-    if (!start || !end) { daysPreview.textContent = ''; return; }
-    const startD = parseDateOnly(start);
-    const endD = parseDateOnly(end);
-    if (endD < startD) { daysPreview.textContent = 'End date must be on or after the start date.'; return; }
-
-    const days = computeWorkingDays(startD, endD, startHalfDayInput.value, endHalfDayInput.value);
-    daysPreview.innerHTML = `≈ <strong>${days}</strong> working day(s)`;
-
-    // While the manual override is on, keep prefilling the (empty) input
-    // with the calculated figure so the admin has a sane starting point
-    // to adjust from, rather than typing a number from scratch.
-    if (isAdmin && manualDaysToggle.checked && manualDaysInput.value === '') {
-        manualDaysInput.value = days;
-    }
-}
-
-// Admin-only: flip between the calculated preview and a free-typed total.
-// Unchecking always reverts to the calculated value — total_days_manual
-// is sent back to the server as false, which also makes the trigger
-// recompute even if dates weren't otherwise touched.
-function onManualDaysToggleChange() {
-    const on = manualDaysToggle.checked;
-    manualDaysInputWrap.classList.toggle('hidden', !on);
-    if (on && manualDaysInput.value === '') {
-        const start = startDateInput.value;
-        const end = endDateInput.value;
-        if (start && end) {
-            const startD = parseDateOnly(start);
-            const endD = parseDateOnly(end);
-            if (endD >= startD) {
-                manualDaysInput.value = computeWorkingDays(startD, endD, startHalfDayInput.value, endHalfDayInput.value);
-            }
-        }
-    }
-    if (!on) manualDaysInput.value = '';
-}
-
-async function onSubmitLeaveRequest(e) {
-    e.preventDefault();
-
-    const startDate = startDateInput.value;
-    const endDate = endDateInput.value;
-    if (!startDate || !endDate || !leaveTypeInput.value) {
-        showToast('Please fill in the required fields.', 'danger');
-        return;
-    }
-    if (endDate < startDate) {
-        showToast('End date must be on or after the start date.', 'danger');
-        return;
-    }
-    if (startDate === endDate && startHalfDayInput.value === 'pm' && endHalfDayInput.value === 'am') {
-        showToast('End time must be later than the start time on the same day.', 'danger');
-        return;
-    }
-
-    // Admin manual override fields. total_days_manual is always sent
-    // explicitly (including "false") so that, on an edit, unchecking the
-    // box actually clears a previous override instead of silently
-    // leaving it in place (a partial update only touches the columns
-    // named in the payload — see calculate_leave_request_total_days()
-    // in 02_leaves_schema.sql for why the server trusts this and not
-    // just "was the box checked").
-    let manualDaysFields = { total_days_manual: false };
-    if (isAdmin && manualDaysToggle.checked) {
-        const manualDays = Number(manualDaysInput.value);
-        if (manualDaysInput.value === '' || Number.isNaN(manualDays) || manualDays < 0) {
-            showToast('Enter a valid number of days (0 or more) for the manual override.', 'danger');
-            return;
-        }
-        manualDaysFields = { total_days: manualDays, total_days_manual: true };
-    }
-
-    // Editing an existing request (admin only) — straight table update,
-    // no employee_id/status change involved. total_days is assumed to
-    // be recalculated server-side the same way it is on insert; if that
-    // trigger turns out to be insert-only, it'll need to be extended to
-    // fire BEFORE UPDATE too.
-    if (editingRequestId) {
-        const existing = allRequests.find(r => r.id === editingRequestId);
-        if (existing) {
-            const overlap = findOverlappingRequest(existing.employee_id, startDate, endDate, editingRequestId);
-            if (overlap) {
-                showToast(`These dates overlap another request: ${describeOverlap(overlap)}.`, 'danger');
-                return;
-            }
-        }
-
-        const payload = {
-            leave_type_id: Number(leaveTypeInput.value),
-            start_date: startDate,
-            start_half_day: startHalfDayInput.value,
-            end_date: endDate,
-            end_half_day: endHalfDayInput.value,
-            reason: reasonInput.value.trim() || null,
-            ...manualDaysFields
-        };
-
-        leaveRequestSubmitBtn.disabled = true;
-        let error;
-        try {
-            ({ error } = await sb.from('leave_requests').update(payload).eq('id', editingRequestId));
-        } catch (err) {
-            error = err; // network-level failure: surface it through the same toast path
-        } finally {
-            leaveRequestSubmitBtn.disabled = false;
-        }
-
-        if (error) {
-            if (error.code === '23P01') {
-                showToast('These dates overlap another pending or approved request for this person.', 'danger');
-            } else {
-                showToast('Could not update request: ' + error.message, 'danger');
-            }
-            return;
-        }
-        showToast('Leave request updated.', 'success');
-        leaveRequestModal.hide();
-        await loadRequests();
-        return;
-    }
-
-    // The field is only ever hidden when there's nothing but "Myself" to
-    // choose from (see populateEmployeeSelect), so falling back to my own
-    // id covers that case; otherwise it always reflects the picker.
-    const targetEmployeeId = onBehalfOfField.classList.contains('hidden')
-        ? myEmployeeId
-        : requestEmployeeSelect.value;
-
-    const overlap = findOverlappingRequest(targetEmployeeId, startDate, endDate);
-    if (overlap) {
-        showToast(`These dates overlap another request: ${describeOverlap(overlap)}.`, 'danger');
-        return;
-    }
-
-    const payload = {
-        employee_id: targetEmployeeId,
-        leave_type_id: Number(leaveTypeInput.value),
-        start_date: startDate,
-        start_half_day: startHalfDayInput.value,
-        end_date: endDate,
-        end_half_day: endHalfDayInput.value,
-        reason: reasonInput.value.trim() || null,
-        ...manualDaysFields
-    };
-
-    leaveRequestSubmitBtn.disabled = true;
-    let error;
-    try {
-        ({ error } = await sb.from('leave_requests').insert(payload));
-    } catch (err) {
-        error = err;
-    } finally {
-        leaveRequestSubmitBtn.disabled = false;
-    }
-
-    if (error) {
-        if (error.code === '23P01') {
-            showToast('These dates overlap another pending or approved request for this person.', 'danger');
-        } else if (error.code === '42501' || /row-level security/i.test(error.message || '')) {
-            showToast('You can only file leave for yourself or someone in your department.', 'danger');
-        } else {
-            showToast('Could not submit request: ' + error.message, 'danger');
-        }
-        return;
-    }
-
-    let message = 'Leave request submitted.';
-    if (targetEmployeeId !== myEmployeeId) {
-        message = isAdmin ? 'Leave created and auto-approved.' : 'Leave request submitted — pending their supervisor\u2019s approval.';
-    }
-    showToast(message, 'success');
-    leaveRequestModal.hide();
-    await loadRequests();
 }
 
 // ---------------------------------------------------------------------

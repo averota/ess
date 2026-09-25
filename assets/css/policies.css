@@ -310,6 +310,39 @@
 .policy-field { min-width: 0; }
 .policy-num { width: 124px; }
 
+/* Boolean toggles (is_prorated, use_partial_month_tiers, requires_approval).
+   Bootstrap's form-switch markup, themed to match the rest of the compact
+   form controls above instead of Bootstrap's default blue. */
+.policies-page .form-check {
+  display: flex;
+  align-items: center;
+  min-height: unset;
+  padding-left: 2.4em;
+}
+.policies-page .form-check-input {
+  margin-top: 0;
+  border-color: var(--border-strong);
+  cursor: pointer;
+}
+.policies-page .form-check-input:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+.policies-page .form-check-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.policies-page .form-check-input:disabled {
+  opacity: 0.5;
+}
+.policies-page .form-check-label {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+}
+
 /* Month select + day number, side by side */
 .policy-date {
   display: flex;
@@ -415,11 +448,12 @@
 
 .lt-list { container: lt / inline-size; }
 
-/* Column header row and each item's header share one grid template */
+/* Column header row and each item's header share one grid template — the
+   last, narrow track is the Actions column (Enable/Disable). */
 .lt-cols,
-.lt-toggle {
+.lt-head {
   display: grid;
-  grid-template-columns: 16px minmax(120px, 1.5fr) repeat(4, minmax(0, 1fr));
+  grid-template-columns: 16px minmax(120px, 1.5fr) repeat(4, minmax(0, 1fr)) minmax(64px, 84px);
   align-items: center;
   gap: 10px;
   padding-left: 14px;
@@ -434,22 +468,25 @@
   font-size: 0.72rem;
   font-weight: 600;
 }
+.lt-cols > :last-child { text-align: center; }
 
 .lt-item + .lt-item { border-top: 1px solid var(--border); }
 
-/* Enable/disable sits on top of the row, clear of the accordion toggle
-   underneath it (a <button> can't nest inside another <button>, and this
-   shouldn't also expand/collapse the item — see the click handler in
-   policies.js). Anchored to the top edge rather than centred, so it lines
-   up with the name/chevron row even when the item grows taller in the
-   narrow layout below. */
-.lt-head { position: relative; }
-.lt-toggle { padding-right: 92px; }
+/* .lt-toggle takes every column except the last (chevron, name, the 4 data
+   cells); Enable/Disable is a sibling — a <button> can't nest inside
+   another <button>, and this shouldn't also expand/collapse the item (see
+   the click handler in policies.js) — so it sits in .lt-head's own final
+   "Actions" grid track, centred under its header instead of floating on
+   top of the row. */
+.lt-toggle {
+  grid-column: 1 / -2;
+  display: grid;
+  grid-template-columns: 16px minmax(120px, 1.5fr) repeat(4, minmax(0, 1fr));
+  align-items: center;
+  gap: 10px;
+}
 .lt-status-toggle {
-  position: absolute;
-  top: 8px;
-  right: 14px;
-  z-index: 1;
+  justify-self: center;
   padding: 2px 10px;
   border-radius: 999px;
   font-size: 0.72rem;
@@ -539,14 +576,53 @@
 }
 .lt-group > .policy-hint { margin-top: 6px; }
 
+/* Proration tiers: a short, variable-length list of (threshold -> credit)
+   rows nested inside the Proration fieldset. Reuses .btn-icon-only /
+   .btn-icon exactly as the rest of the app (see employees.js row actions
+   and #addLeaveTypeBtn) rather than inventing new button styles. */
+.lt-tiers {
+  width: 100%;
+  margin-top: 6px;
+}
+.lt-tiers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.lt-tier-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.lt-tier-row .form-control {
+  width: 108px;
+}
+.lt-tier-arrow {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--ink-faint);
+}
+.lt-tiers > .btn-icon {
+  padding: 3px 10px;
+  font-size: 0.78rem;
+}
+.lt-tiers > .policy-hint { margin-top: 8px; }
+
 /* Narrow: drop the column headers; each item becomes name + one wrapped
    line of labelled values. */
 @container lt (max-width: 640px) {
   .lt-cols { display: none; }
+  .lt-head {
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+  }
   .lt-toggle {
+    grid-column: 1 / 3;
     grid-template-columns: 16px minmax(0, 1fr);
     row-gap: 3px;
   }
+  .lt-status-toggle { grid-column: 3; }
   .lt-name { grid-column: 2; }
   .lt-cells {
     display: flex;

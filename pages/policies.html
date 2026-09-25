@@ -270,10 +270,27 @@
                 <span>Max balance</span>
                 <span>Back-date</span>
                 <span>Carry forward</span>
+                <span>Actions</span>
               </div>
 
               <!-- One .lt-item per leave type is added here by policies.js (from the template below) -->
             </div>
+
+            <!-- One proration tier row. Cloned by policies.js into each leave type's
+                 [data-tiers-list] — not part of ltItemTemplate since rows are added/removed
+                 individually rather than once per leave type. -->
+            <template id="ltTierRowTemplate">
+              <div class="lt-tier-row">
+                <input type="number" class="form-control" data-tier-field="min_working_days"
+                       min="0" max="31" step="1" inputmode="numeric" placeholder="Days left ≥">
+                <svg class="lt-tier-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+                <input type="number" class="form-control" data-tier-field="credit_days"
+                       min="0" max="9999.9" step="0.5" inputmode="decimal" placeholder="Credit days">
+                <button type="button" class="btn-icon-only" data-remove-tier aria-label="Remove tier">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+                </button>
+              </div>
+            </template>
 
             <!-- Leave-type item. policies.js clones this once per row of leave_types and
                  replaces {{id}} with leave_type_id. -->
@@ -352,6 +369,100 @@
                           </div>
                         </div>
                         <p class="policy-hint">Unused carried days lapse on this date in the new year.</p>
+                      </fieldset>
+
+                      <fieldset class="lt-group">
+                        <legend>Eligibility</legend>
+                        <div class="lt-group-fields">
+                          <div class="policy-field">
+                            <label class="form-label" for="lt{{id}}-elig-type">Employees can use this from</label>
+                            <select class="form-select" id="lt{{id}}-elig-type" data-field="eligibility_type">
+                              <option value="immediate">Day one</option>
+                              <option value="after_probation">End of probation</option>
+                              <option value="after_years">N years of service</option>
+                            </select>
+                          </div>
+                          <div class="policy-field" data-elig-years-field>
+                            <label class="form-label" for="lt{{id}}-elig-years">Years of service required</label>
+                            <div class="input-group policy-num">
+                              <input type="number" class="form-control" id="lt{{id}}-elig-years" data-field="eligibility_years" min="1" max="99" step="1" inputmode="numeric">
+                              <span class="input-group-text">years</span>
+                            </div>
+                          </div>
+                        </div>
+                      </fieldset>
+
+                      <fieldset class="lt-group">
+                        <legend>Proration for new hires</legend>
+                        <div class="lt-group-fields">
+                          <div class="policy-field form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch" id="lt{{id}}-prorated" data-field="is_prorated">
+                            <label class="form-check-label" for="lt{{id}}-prorated">Prorate the first (partial) year</label>
+                          </div>
+                        </div>
+                        <div class="lt-group-fields" data-prorate-fields>
+                          <div class="policy-field">
+                            <label class="form-label" for="lt{{id}}-accrual">Full remaining month credits</label>
+                            <div class="input-group policy-num">
+                              <input type="number" class="form-control" id="lt{{id}}-accrual" data-field="monthly_accrual_days" min="0" max="99.99" step="0.01" placeholder="Beginning balance ÷ 12" inputmode="decimal">
+                              <span class="input-group-text">days</span>
+                            </div>
+                          </div>
+                          <div class="policy-field form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch" id="lt{{id}}-tiers-on" data-field="use_partial_month_tiers">
+                            <label class="form-check-label" for="lt{{id}}-tiers-on">Use tiered credit for the partial hire month</label>
+                          </div>
+                        </div>
+                        <p class="policy-hint">Leave blank to credit beginning balance ÷ 12 for each full remaining month.</p>
+
+                        <div class="lt-tiers" data-tiers-editor>
+                          <div class="lt-tiers-list" data-tiers-list></div>
+                          <button type="button" class="btn btn-sm btn-ghost btn-icon" data-add-tier>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+                            Add tier
+                          </button>
+                          <p class="policy-hint">Highest threshold met by the hire month's remaining working days sets the credit; no match credits 0.</p>
+                        </div>
+                      </fieldset>
+
+                      <fieldset class="lt-group" data-service-bonus-field>
+                        <legend>Service-length bonus</legend>
+                        <div class="lt-group-fields">
+                          <div class="policy-field">
+                            <label class="form-label" for="lt{{id}}-bonus-interval">Every</label>
+                            <div class="input-group policy-num">
+                              <input type="number" class="form-control" id="lt{{id}}-bonus-interval" data-field="service_bonus_interval_years" min="1" max="99" step="1" placeholder="No bonus" inputmode="numeric">
+                              <span class="input-group-text">years</span>
+                            </div>
+                          </div>
+                          <div class="policy-field">
+                            <label class="form-label" for="lt{{id}}-bonus-days">Add</label>
+                            <div class="input-group policy-num">
+                              <input type="number" class="form-control" id="lt{{id}}-bonus-days" data-field="service_bonus_days" min="0" max="9999.9" step="0.5" inputmode="decimal">
+                              <span class="input-group-text">days</span>
+                            </div>
+                          </div>
+                        </div>
+                        <p class="policy-hint">Uncapped, added to the entitlement. Annual Leave only.</p>
+                      </fieldset>
+
+                      <fieldset class="lt-group">
+                        <legend>Approval routing</legend>
+                        <div class="lt-group-fields">
+                          <div class="policy-field form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch" id="lt{{id}}-requires-approval" data-field="requires_approval" checked>
+                            <label class="form-check-label" for="lt{{id}}-requires-approval">Requests need review</label>
+                          </div>
+                        </div>
+                        <div class="lt-group-fields" data-approver-field>
+                          <div class="policy-field">
+                            <label class="form-label" for="lt{{id}}-approver">Reviewed by</label>
+                            <select class="form-select" id="lt{{id}}-approver" data-field="approver_post_id">
+                              <option value="">Employee's direct supervisor</option>
+                            </select>
+                          </div>
+                        </div>
+                        <p class="policy-hint">Leave as "direct supervisor" to keep today's behaviour, or pin review to a specific position.</p>
                       </fieldset>
                     </div>
                   </div>

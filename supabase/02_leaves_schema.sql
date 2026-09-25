@@ -13,14 +13,17 @@
 --   public.track_audit_columns(), and the default-privileges grants are
 --   all reused here, not redefined. This file only adds new objects.
 --
--- Also depends on 03_policies_schemas.sql for ONE thing: total_days is
+-- Also depends on 03_policies_schemas.sql for TWO things: total_days is
 -- calculated from public.policy_weekly_working_days (see "Working-day
--- model" below). 03 in turn needs public.leave_types from this file, so
--- the order is 01, 02, 03. The trigger function below is created fine
--- before 03 exists (plpgsql doesn't check table names at create time),
--- but inserting/editing a leave request before 03 has run will fail with
--- "relation public.policy_weekly_working_days does not exist" — so run
--- 03 straight after this file.
+-- model" below), and set_leave_request_defaults() /
+-- review_leave_request() below read public.leave_type_policies
+-- (requires_approval, approver_post_id) to decide whether a request
+-- needs review at all and who may review it. 03 in turn needs
+-- public.leave_types from this file, so the order is 01, 02, 03. Both
+-- functions are created fine before 03 exists (plpgsql doesn't check
+-- table names at create time), but inserting/editing/reviewing a leave
+-- request before 03 has run will fail with "relation ... does not
+-- exist" — so run 03 straight after this file.
 --
 -- Fresh setup:  run 01, then this file, then 03.
 -- Existing DB:  just re-run this file. It upgrades in place (adds
@@ -56,14 +59,26 @@
 --     leave would defeat the point of an approval step.
 --   - Approving/rejecting a *pending* request is done via the
 --     review_leave_request() RPC, callable by the employee's direct
---     supervisor OR any admin. Cancelling a still-pending request is
---     done via cancel_leave_request(), callable by the requester or an
---     admin. Both are SECURITY DEFINER functions rather than RLS update
+--     supervisor OR any admin — UNLESS the leave type sets
+--     leave_type_policies.approver_post_id (file 03), in which case the
+--     direct supervisor is bypassed and only someone holding that exact
+--     position (public.positions), or an admin, may review it.
+--     Cancelling a still-pending request is done via
+--     cancel_leave_request(), callable by the requester or an admin.
+--     Both are SECURITY DEFINER functions rather than RLS update
 --     policies because "only pending requests can transition" and
 --     "stamp approver + timestamp together" are business rules RLS
 --     can't express cleanly (RLS filters rows, not columns/transitions).
 --     Status transitions always go through those RPCs — never a plain
 --     update — even for the requester's own row.
+--   - A leave type can also skip review entirely: when its
+--     leave_type_policies.requires_approval = false, a self-filed
+--     request (self, or for an eligible teammate) is auto-approved on
+--     submission by set_leave_request_defaults() below, the same as the
+--     "admin files for someone else" case, but with no approver of
+--     record (approved_by stays null). Admin-for-self is unaffected —
+--     it still needs someone else to review — since letting an admin
+--     approve their own leave would defeat the point either way.
 --   - Approval comment: when APPROVING, the reviewer may attach an
 --     optional comment (leave_requests.review_comment, max 500 chars).
 --     Rejections keep using rejection_reason (required by
@@ -199,9 +214,7 @@ insert into public.leave_types (leave_type) values
     ('Annual Leave'),
     ('Sick Leave'),
     ('Unpaid Leave'),
-    ('Maternity Leave'),
-    ('Paternity Leave'),
-    ('Emergency Leave')
+    ('Maternity Leave')
 on conflict (leave_type) do nothing;
 
 -- Leave statuses: fixed workflow states, not admin-editable — same
@@ -517,6 +530,12 @@ language plpgsql
 security definer
 set search_path = ''
 as $$
+declare
+    -- Defaults to true (needs review) if the leave type has no policy
+    -- row yet — matches leave_type_policies.requires_approval's own
+    -- column default, so a leave type never silently skips review just
+    -- because its policy row hasn't been created.
+    v_requires_approval boolean;
 begin
     new.requested_by := public.current_employee_uuid();
 
@@ -524,31 +543,48 @@ begin
     -- the fact (set_leave_review_comment()), never from the insert.
     new.review_comment := null;
 
+    select coalesce(ltp.requires_approval, true) into v_requires_approval
+    from public.leave_type_policies ltp
+    where ltp.leave_type_id = new.leave_type_id;
+
     if not public.is_admin() then
         -- Self-service, whether it's for themselves or an eligible
-        -- teammate (see can_request_leave_for()): always pending,
-        -- never auto-approved, regardless of who it's for.
+        -- teammate (see can_request_leave_for()): pending as before,
+        -- UNLESS the leave type is configured to skip review entirely
+        -- (requires_approval = false), in which case it's auto-approved
+        -- with no approver of record.
         if new.employee_id is null or new.employee_id = public.current_employee_uuid() then
             new.employee_id := public.current_employee_uuid();
         elsif not public.can_request_leave_for(new.employee_id) then
             raise exception 'You can only file leave for yourself or someone in your department';
         end if;
-        new.status       := 0;
-        new.approved_by  := null;
-        new.approved_at  := null;
+
+        if v_requires_approval then
+            new.status       := 0;
+            new.approved_by  := null;
+            new.approved_at  := null;
+        else
+            new.status       := 1;
+            new.approved_by  := null;
+            new.approved_at  := now();
+        end if;
     else
         if new.employee_id <> public.current_employee_uuid() then
             -- Admin creating on behalf of someone else: auto-approved,
-            -- no further review needed.
+            -- no further review needed, regardless of requires_approval.
             new.status      := 1;
             new.approved_by := public.current_employee_uuid();
             new.approved_at := now();
-        else
+        elsif v_requires_approval then
             -- Admin creating a request for themselves: behaves like a
             -- normal self-request (still needs someone else to review).
             new.status      := 0;
             new.approved_by := null;
             new.approved_at := null;
+        else
+            new.status      := 1;
+            new.approved_by := null;
+            new.approved_at := now();
         end if;
     end if;
     return new;
@@ -689,11 +725,15 @@ security definer
 set search_path = ''
 as $$
 declare
-    v_employee_id uuid;
-    v_status      smallint;
-    v_new_status  smallint;
+    v_employee_id      uuid;
+    v_leave_type_id    integer;
+    v_status           smallint;
+    v_new_status       smallint;
+    v_approver_post_id integer;
+    v_can_review       boolean;
 begin
-    select employee_id, status into v_employee_id, v_status
+    select employee_id, leave_type_id, status
+      into v_employee_id, v_leave_type_id, v_status
     from public.leave_requests
     where id = p_request_id;
 
@@ -701,8 +741,27 @@ begin
         raise exception 'Leave request not found';
     end if;
 
-    if not (public.is_admin() or public.is_supervisor_of(v_employee_id)) then
-        raise exception 'Only the employee''s supervisor or an admin can review this request';
+    -- Who may review: the leave type's required approver role/title
+    -- (leave_type_policies.approver_post_id) if one is set, otherwise
+    -- the employee's direct supervisor as before. An admin can always
+    -- review regardless of which rule applies.
+    select ltp.approver_post_id into v_approver_post_id
+    from public.leave_type_policies ltp
+    where ltp.leave_type_id = v_leave_type_id;
+
+    if v_approver_post_id is not null then
+        v_can_review := exists (
+            select 1
+            from public.employees me
+            where me.id = public.current_employee_uuid()
+              and me.post_id = v_approver_post_id
+        );
+    else
+        v_can_review := public.is_supervisor_of(v_employee_id);
+    end if;
+
+    if not (public.is_admin() or v_can_review) then
+        raise exception 'Only the designated approver or an admin can review this request';
     end if;
 
     if v_status <> 0 then
