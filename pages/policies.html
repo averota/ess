@@ -248,6 +248,16 @@
               <span>Values are saved, but balances, carry forward and the back-date limit aren't applied to leave requests yet.</span>
             </p>
 
+            <div class="lt-add-row">
+              <input type="text" class="form-control form-control-sm" id="newLeaveTypeInput" placeholder="New leave type name" maxlength="100">
+              <button type="button" class="btn btn-accent btn-sm btn-icon" id="addLeaveTypeBtn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14"></path>
+                </svg>
+                Add leave type
+              </button>
+            </div>
+
             <div class="empty-state" id="ltLoading">Loading leave types…</div>
 
             <div class="policy-group lt-list hidden" id="ltList">
@@ -281,6 +291,9 @@
                       <span class="lt-cell"><span class="lt-cell-label">Carry forward </span><span data-summary="carry_forward">—</span></span>
                     </span>
                   </button>
+                  <!-- Sibling of .lt-toggle, not nested inside it — a <button> can't contain
+                       another <button>, and this shouldn't also trigger the accordion. -->
+                  <button type="button" class="btn btn-sm btn-ghost lt-status-toggle" data-toggle-active>Disable</button>
                 </h2>
                 <div class="collapse" id="lt-{{id}}-body" data-bs-parent="#ltList">
                   <div class="policy-body">

@@ -402,6 +402,17 @@
 /* ---------------------------------------------------------------- */
 /* Leave types: accordion that reads like a table                    */
 /* ---------------------------------------------------------------- */
+/* "New leave type name" input + Add button, above the list */
+.lt-add-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.lt-add-row .form-control {
+  max-width: 240px;
+}
+
 .lt-list { container: lt / inline-size; }
 
 /* Column header row and each item's header share one grid template */
@@ -425,6 +436,30 @@
 }
 
 .lt-item + .lt-item { border-top: 1px solid var(--border); }
+
+/* Enable/disable sits on top of the row, clear of the accordion toggle
+   underneath it (a <button> can't nest inside another <button>, and this
+   shouldn't also expand/collapse the item — see the click handler in
+   policies.js). Anchored to the top edge rather than centred, so it lines
+   up with the name/chevron row even when the item grows taller in the
+   narrow layout below. */
+.lt-head { position: relative; }
+.lt-toggle { padding-right: 92px; }
+.lt-status-toggle {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  z-index: 1;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.lt-status-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 
 .lt-toggle {
   width: 100%;
