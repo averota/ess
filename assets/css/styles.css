@@ -333,6 +333,14 @@ a:hover { color: var(--accent-dark); }
   margin: 0;
 }
 
+.page-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
 .page-content {
   flex: 1 1 auto;
 }

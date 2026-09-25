@@ -23,32 +23,27 @@
         </svg>
       </button>
       <h1 class="page-title">Leaves requests</h1>
+      <div class="page-topbar-actions" id="metaBar">
+        <div class="btn-group-actions">
+          <button type="button" class="btn btn-sm btn-ghost btn-icon" id="refreshListBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+            <span id="refreshListBtnLabel">Refresh</span>
+          </button>
+          <button type="button" class="btn btn-sm btn-accent btn-icon" id="newRequestBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 5v14M5 12h14"></path>
+            </svg>
+            New request
+          </button>
+        </div>
+      </div>
     </header>
 
     <main class="page-content">
       <div class="page-wrap" id="leavesContent" style="display: none;">
-
-        <div class="meta-bar" id="metaBar">
-          <div>
-            <p class="meta">Submit and track your leave, and review requests from your team.</p>
-          </div>
-          <div class="btn-group-actions">
-            <button type="button" class="btn btn-sm btn-ghost btn-icon" id="refreshListBtn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path>
-                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-              </svg>
-              <span id="refreshListBtnLabel">Refresh</span>
-            </button>
-            <button type="button" class="btn btn-sm btn-accent btn-icon" id="newRequestBtn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M12 5v14M5 12h14"></path>
-              </svg>
-              New request
-            </button>
-          </div>
-        </div>
-
         <div class="stats-grid" id="statsGrid"></div>
 
         <!-- "My leave" vs "Team requests" tabs, and the request
