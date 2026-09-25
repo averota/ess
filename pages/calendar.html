@@ -86,6 +86,7 @@
             <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
           </div>
           <div class="cal-grid" id="calGrid"></div>
+          <div class="cal-legend" id="calLegend" aria-label="Leave type legend"></div>
         </div>
 
         <!-- Secondary: upload panel, collapsed until "Upload Excel/CSV" is clicked -->
@@ -195,6 +196,48 @@
           <button type="submit" class="btn btn-accent" id="holidaySubmitBtn">Save holiday</button>
         </div>
       </form>
+    </div>
+  </div>
+</div>
+
+<!-- Day leave view: compact read-only list of everyone's leave on the
+     clicked date (see openDayLeaveModal() in calendar.js). Clicking
+     anywhere in a day cell opens this; the "+" button in the cell's
+     corner opens leaveRequestModal instead, via goToNewLeaveRequest(). -->
+<div class="modal fade" id="dayLeaveModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog day-leave-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="dayLeaveModalTitle">Leave</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="dayLeaveModalBody"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost btn-sm" data-bs-dismiss="modal">Close</button>
+        <button type="button" class="btn btn-accent btn-sm btn-icon" id="dayLeaveNewRequestBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          New request
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Leave detail view: one record from dayLeaveModal, expanded. Opened by
+     clicking a row in dayLeaveModal (see openLeaveDetailModal() in
+     calendar.js) — dayLeaveModal closes first, same handoff pattern as
+     the "New request" button above. -->
+<div class="modal fade" id="leaveDetailModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="leaveDetailModalTitle">Leave detail</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="leaveDetailModalBody"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost btn-sm" data-bs-dismiss="modal">Close</button>
+      </div>
     </div>
   </div>
 </div>

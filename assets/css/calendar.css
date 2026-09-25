@@ -80,6 +80,7 @@
 }
 
 .cal-day {
+  position: relative;
   background: var(--surface);
   padding: 6px 8px;
   display: flex;
@@ -88,6 +89,34 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+/* "+" new-leave-request button, top-right corner of each cell (current
+   month only — see renderCalendar()). Stops its own click from bubbling
+   to the cell so it opens leaveRequestModal instead of dayLeaveModal. */
+.cal-day-add {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  padding: 0;
+  z-index: 1;
+}
+.cal-day-add svg { width: 12px; height: 12px; }
+.cal-day-add:hover,
+.cal-day-add:focus-visible {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  outline: none;
 }
 .cal-day.is-clickable { cursor: pointer; }
 .cal-day.is-clickable:hover { background: var(--bg); }
@@ -126,11 +155,185 @@
 }
 .cal-holiday-pill:disabled { cursor: default; }
 
+/* Leave entries within a day cell — up to 3 shown ("Name: 1" / "Name: 0.5"),
+   4th+ collapse into a single "..." pill (see calendar.js renderCalendar()).
+   Color per leave type comes from --leave-color, set inline per pill by
+   colorForLeaveType() so the palette stays defined in one place (JS). */
+.cal-leave-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cal-leave-pill {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.3;
+  padding: 2px 6px;
+  border-radius: 5px;
+  color: #fff;
+  background: var(--leave-color, var(--accent));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
+.cal-leave-more {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
+  padding: 0 6px;
+  cursor: default;
+}
+
+/* Legend: one swatch + label per active leave type, sits under the grid
+   inside .cal-card so it scrolls with the calendar, not the page. */
+.cal-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.cal-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+.cal-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.cal-grid.is-loading {
+  opacity: 0.55;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+/* Day leave view modal (#dayLeaveModal) — wider dialog, but each record
+   stays a single compact row: name + type badge on the left, days/reason
+   trailing on the right, both truncating before they'd wrap. */
+.day-leave-dialog {
+  max-width: 480px;
+}
+#dayLeaveModal .modal-body {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.day-leave-empty {
+  margin: 0;
+  padding: 2px 0;
+  font-size: 0.85rem;
+  color: var(--ink-faint);
+}
+.day-leave-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 2px;
+  margin: 0 -2px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.day-leave-item:hover {
+  background: var(--bg);
+}
+.day-leave-item + .day-leave-item {
+  border-top: 1px solid var(--border);
+}
+.day-leave-chevron {
+  flex-shrink: 0;
+  font-size: 1rem;
+  color: var(--ink-faint);
+}
+.day-leave-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.day-leave-name {
+  font-weight: 700;
+  font-size: 0.86rem;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.day-leave-type {
+  flex-shrink: 0;
+  font-size: 0.64rem;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--leave-color, var(--accent));
+  white-space: nowrap;
+}
+.day-leave-meta {
+  flex: 0 1 auto;
+  max-width: 45%;
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Leave detail modal (#leaveDetailModal) — the expanded, single-record
+   view opened from a day-leave-item row above. */
+.leave-detail-type {
+  display: inline-block;
+  margin-bottom: 12px;
+}
+.leave-detail-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 16px;
+  row-gap: 8px;
+  margin: 0;
+}
+.leave-detail-list dt {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.leave-detail-list dd {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--ink);
+  word-break: break-word;
+}
+
 @container holcal (max-width: 560px) {
   .cal-day { padding: 3px 4px; gap: 2px; }
   .cal-day-num { font-size: 0.72rem; }
   .cal-day.is-today .cal-day-num { width: 18px; height: 18px; }
   .cal-holiday-pill { font-size: 0.62rem; padding: 2px 4px; }
+  .cal-leave-pill { font-size: 0.58rem; padding: 1px 4px; }
+  .cal-leave-more { font-size: 0.6rem; }
+  .cal-day-add { width: 14px; height: 14px; top: 2px; right: 2px; }
+  .cal-day-add svg { width: 9px; height: 9px; }
   .cal-toolbar { padding: 10px 10px; gap: 6px; }
   .cal-jump select { padding: 5px 6px; font-size: 0.82rem; }
+  .cal-legend { padding: 8px 10px; gap: 4px 10px; }
+  .cal-legend-item { font-size: 0.7rem; }
 }

@@ -76,6 +76,24 @@
     return parseDateOnly(dateStr).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   }
 
+  function formatDateShort(dateStr) {
+    return parseDateOnly(dateStr).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  // "Sep 20, 2026" for a single full day, "Sep 20, 2026 (PM)" for a single
+  // half day, "Sep 20 (PM) – Sep 22, 2026 (AM)" for a multi-day request
+  // whose boundary dates are cut short — same half-day model as
+  // collectLeaveDays() above, just rendered as text instead of a fraction.
+  function formatLeaveRange(entry) {
+    if (entry.startDate === entry.endDate) {
+      const half = entry.fraction === 1 ? '' : entry.startHalfDay === 'pm' ? ' (PM)' : ' (AM)';
+      return `${formatDateShort(entry.startDate)}${half}`;
+    }
+    const startHalf = entry.startHalfDay === 'pm' ? ' (PM)' : '';
+    const endHalf = entry.endHalfDay === 'am' ? ' (AM)' : '';
+    return `${formatDateShort(entry.startDate)}${startHalf} – ${formatDateShort(entry.endDate)}${endHalf}`;
+  }
+
   function trashIconSvg() {
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
       + '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>'
@@ -94,9 +112,39 @@
   let readOnly = false;
   let leaveModalReady = false; // set once LeaveRequestModal.init() resolves — guards goToNewLeaveRequest()
   let holidayModal;
+  let dayLeaveModal;
+  let dayLeaveModalKey = null; // date the modal is currently showing — feeds the "New request" button
+  let leaveDetailModal;
   let editingHolidayId = null;
   let currentDataset = null;      // upload preview
   const holidaysMap = new Map();  // 'yyyy-mm-dd' -> { id, date, description, remark }
+
+  // Leave rendering (item 1-4: render leave into the calendar, filtered by
+  // RLS server-side, up to 3 per cell + overflow marker, colored by type).
+  //
+  // Only APPROVED leave (status = 1) is drawn — pending/rejected/cancelled
+  // requests aren't shown on the shared calendar. Change the `.eq('status', 1)`
+  // in loadLeavesForView() below if pending requests should also render.
+  //
+  // Filtering by "self + subordinate, all for admin" needs NO client-side
+  // role check: leave_requests_select RLS (02_leaves_schema.sql) already
+  // scopes every select to self, direct reports (is_supervisor_of), or
+  // everything for admins — the query below just asks for the visible date
+  // range and gets back exactly the rows the signed-in user is allowed to see.
+  const LEAVE_COLOR_PALETTE = [
+    '#2563eb', '#dc2626', '#059669', '#d97706',
+    '#7c3aed', '#db2777', '#0891b2', '#65a30d'
+  ];
+  const leaveTypeNames = new Map();  // leave_type_id -> leave_type text (active types, for the legend)
+  const leaveTypeColors = new Map(); // leave_type_id -> hex color, assigned in id order so it's stable
+  const leavesMap = new Map();       // 'yyyy-mm-dd' -> [{ name, typeId, typeName, fraction }], sorted by name
+
+  function colorForLeaveType(typeId) {
+    if (!leaveTypeColors.has(typeId)) {
+      leaveTypeColors.set(typeId, LEAVE_COLOR_PALETTE[leaveTypeColors.size % LEAVE_COLOR_PALETTE.length]);
+    }
+    return leaveTypeColors.get(typeId);
+  }
 
   const today = new Date();
   let viewYear = today.getFullYear();
@@ -249,6 +297,7 @@
   /* ------------------------------------------------------------------ */
   const calCard = $('#calendarView');
   const calGrid = $('#calGrid');
+  const calLegend = $('#calLegend');
   const monthSelect = $('#monthSelect');
   const yearSelect = $('#yearSelect');
   const prevMonthBtn = $('#prevMonthBtn');
@@ -369,9 +418,49 @@
         div.appendChild(pill);
       }
 
+      const leaves = leavesMap.get(key);
+      if (leaves && leaves.length > 0) {
+        const list = document.createElement('div');
+        list.className = 'cal-leave-list';
+        // Deliberately no stopPropagation here: clicking a pill (or the
+        // "..." overflow marker) bubbles up to the cell's own click
+        // handler and opens the full day view below.
+
+        leaves.slice(0, 3).forEach((entry) => {
+          const pill = document.createElement('span');
+          pill.className = 'cal-leave-pill';
+          pill.style.setProperty('--leave-color', colorForLeaveType(entry.typeId));
+          pill.textContent = `${entry.name}: ${entry.fraction === 1 ? '1' : '0.5'}`;
+          pill.title = `${entry.name} — ${entry.typeName} (${entry.fraction === 1 ? 'full day' : 'half day'})`;
+          list.appendChild(pill);
+        });
+
+        if (leaves.length > 3) {
+          const more = document.createElement('span');
+          more.className = 'cal-leave-more';
+          more.textContent = '...';
+          more.title = leaves.slice(3)
+            .map((entry) => `${entry.name}: ${entry.fraction === 1 ? '1' : '0.5'} (${entry.typeName})`)
+            .join('\n');
+          list.appendChild(more);
+        }
+
+        div.appendChild(list);
+      }
+
       if (!cell.otherMonth) {
         div.classList.add('is-clickable');
-        div.addEventListener('click', () => { if (!holiday) goToNewLeaveRequest(key); });
+        div.addEventListener('click', () => openDayLeaveModal(key));
+
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'cal-day-add';
+        addBtn.title = 'New leave request';
+        addBtn.setAttribute('aria-label', `New leave request for ${key}`);
+        addBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+          + 'stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>';
+        addBtn.addEventListener('click', (e) => { e.stopPropagation(); goToNewLeaveRequest(key); });
+        div.appendChild(addBtn);
       }
 
       fragment.appendChild(div);
@@ -381,7 +470,15 @@
     fitCalendarHeight();
   }
 
-  function goToMonth(year, month) { viewYear = year; viewMonth = month; renderCalendar(); }
+  function goToMonth(year, month) {
+    viewYear = year;
+    viewMonth = month;
+    renderCalendar(); // instant nav using cached holidays; leave pills pop in once the fetch below resolves
+    loadLeavesForView().catch((err) => {
+      console.error('calendar: failed to load leave data', err);
+      toast('Couldn\u2019t load leave data for this month.', 'danger');
+    });
+  }
   function shiftMonth(delta) {
     let m = viewMonth + delta, y = viewYear;
     if (m < 0) { m = 11; y--; } else if (m > 11) { m = 0; y++; }
@@ -397,6 +494,233 @@
     holidaysMap.clear();
     (data || []).forEach((h) => holidaysMap.set(h.date, h));
     renderCalendar();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Leave: type legend + per-cell rendering                              */
+  /* ------------------------------------------------------------------ */
+
+  // Active leave types, once — assigns a stable palette color per
+  // leave_type_id (id order) and powers the legend. A type retired later
+  // (is_active = false) simply won't appear in the legend; colorForLeaveType()
+  // still assigns it a fallback color on demand if old leave against it is
+  // still visible on the calendar.
+  async function loadLeaveTypes() {
+    const { data, error } = await db
+      .from('leave_types')
+      .select('leave_type_id, leave_type')
+      .eq('is_active', true)
+      .order('leave_type_id', { ascending: true });
+    if (error) throw error;
+
+    leaveTypeNames.clear();
+    (data || []).forEach((t) => {
+      leaveTypeNames.set(t.leave_type_id, t.leave_type);
+      colorForLeaveType(t.leave_type_id); // reserve its palette slot in id order
+    });
+    renderLegend();
+  }
+
+  function renderLegend() {
+    if (!calLegend) return;
+    calLegend.innerHTML = '';
+    leaveTypeNames.forEach((name, typeId) => {
+      const item = document.createElement('span');
+      item.className = 'cal-legend-item';
+      const swatch = document.createElement('span');
+      swatch.className = 'cal-legend-swatch';
+      swatch.style.background = colorForLeaveType(typeId);
+      item.append(swatch, name);
+      calLegend.appendChild(item);
+    });
+  }
+
+  // First/last date currently on screen (includes the other-month padding
+  // days buildMonthCells() adds to fill the grid), as 'yyyy-mm-dd' keys.
+  function visibleRangeKeys() {
+    const cells = buildMonthCells(viewYear, viewMonth);
+    const first = cells[0];
+    const last = cells[cells.length - 1];
+    return {
+      startKey: dateKey(first.year, first.month, first.day),
+      endKey: dateKey(last.year, last.month, last.day)
+    };
+  }
+
+  // Expands one leave_requests row into its per-date fractions, following
+  // the half-day model from 02_leaves_schema.sql: a boundary date is 0.5
+  // when its half-day flag cuts it short, every date strictly between
+  // start/end is a whole day, and a single-day request is whole only when
+  // neither flag cuts into it. (This mirrors the DB's day-boundary rules
+  // for *display*; it intentionally ignores policy_weekly_working_days,
+  // which only matters for the payroll total_days figure, not for marking
+  // which calendar squares a person is out on.)
+  function collectLeaveDays(row) {
+    const results = [];
+    const start = parseDateOnly(row.start_date);
+    const end = parseDateOnly(row.end_date);
+    const singleDay = row.start_date === row.end_date;
+    const cursor = new Date(start);
+    while (cursor <= end) {
+      const key = dateKey(cursor.getFullYear(), cursor.getMonth(), cursor.getDate());
+      let fraction;
+      if (singleDay) {
+        fraction = (row.start_half_day !== 'pm' && row.end_half_day !== 'am') ? 1 : 0.5;
+      } else if (key === row.start_date) {
+        fraction = row.start_half_day === 'pm' ? 0.5 : 1;
+      } else if (key === row.end_date) {
+        fraction = row.end_half_day === 'am' ? 0.5 : 1;
+      } else {
+        fraction = 1;
+      }
+      results.push({ key, fraction });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return results;
+  }
+
+  // Approved leave overlapping the visible range, for whoever RLS says the
+  // signed-in user may see (self / direct reports / everyone if admin —
+  // see leave_requests_select in 02_leaves_schema.sql). The employee/type
+  // embeds ride on top of that same RLS (leaves_employees_select_direct_reports
+  // covers the name; leave_types is world-readable).
+  async function loadLeavesForView() {
+    const { startKey, endKey } = visibleRangeKeys();
+    calGrid.classList.add('is-loading');
+    try {
+      const { data, error } = await db
+        .from('leave_requests')
+        .select(`
+          employee_id,
+          start_date,
+          start_half_day,
+          end_date,
+          end_half_day,
+          leave_type_id,
+          total_days,
+          reason,
+          leave_type:leave_types(leave_type),
+          employee:employees!leave_requests_employee_id_fkey(name, employee_id)
+        `)
+        .eq('status', 1)
+        .lte('start_date', endKey)
+        .gte('end_date', startKey);
+      if (error) throw error;
+
+      leavesMap.clear();
+      (data || []).forEach((row) => {
+        const name = row.employee ? row.employee.name : 'Unknown';
+        const typeName = row.leave_type ? row.leave_type.leave_type : 'Leave';
+        collectLeaveDays(row).forEach(({ key, fraction }) => {
+          if (key < startKey || key > endKey) return; // clamp to the visible grid
+          if (!leavesMap.has(key)) leavesMap.set(key, []);
+          leavesMap.get(key).push({
+            name,
+            employeeCode: row.employee ? row.employee.employee_id : null,
+            typeId: row.leave_type_id,
+            typeName,
+            fraction,               // this date's share (1 / 0.5) — used on the cell pill
+            totalDays: Number(row.total_days), // the request's full length — used in the day/detail views
+            reason: row.reason,
+            startDate: row.start_date,     // full request span + half-day flags — used in the detail view
+            endDate: row.end_date,
+            startHalfDay: row.start_half_day,
+            endHalfDay: row.end_half_day
+          });
+        });
+      });
+      leavesMap.forEach((list) => list.sort((a, b) => a.name.localeCompare(b.name)));
+
+      renderCalendar();
+    } finally {
+      calGrid.classList.remove('is-loading');
+    }
+  }
+
+  // Compact read-only day view: everyone's leave on the clicked date.
+  // Name + leave type are the primary line; days/reason are a single
+  // minimal secondary line, kept short on purpose (see the design notes
+  // in the CSS). Opened by clicking anywhere in a day cell.
+  function openDayLeaveModal(key) {
+    dayLeaveModalKey = key;
+    const entries = leavesMap.get(key) || [];
+    $('#dayLeaveModalTitle').textContent = formatDateLong(key);
+
+    const body = $('#dayLeaveModalBody');
+    body.innerHTML = '';
+
+    if (entries.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'day-leave-empty';
+      empty.textContent = 'No leave on this date.';
+      body.appendChild(empty);
+    } else {
+      entries.forEach((entry, index) => {
+        const item = document.createElement('div');
+        item.className = 'day-leave-item';
+        item.dataset.index = String(index);
+
+        const main = document.createElement('div');
+        main.className = 'day-leave-main';
+        const name = document.createElement('span');
+        name.className = 'day-leave-name';
+        name.textContent = entry.name;
+        const type = document.createElement('span');
+        type.className = 'day-leave-type';
+        type.textContent = entry.typeName;
+        type.style.setProperty('--leave-color', colorForLeaveType(entry.typeId));
+        main.append(name, type);
+
+        const meta = document.createElement('div');
+        meta.className = 'day-leave-meta';
+        const daysLabel = `${entry.totalDays} day${entry.totalDays === 1 ? '' : 's'}`;
+        meta.textContent = entry.reason ? `${daysLabel} · ${entry.reason}` : daysLabel;
+
+        const chevron = document.createElement('span');
+        chevron.className = 'day-leave-chevron';
+        chevron.setAttribute('aria-hidden', 'true');
+        chevron.textContent = '\u203a';
+
+        item.append(main, meta, chevron);
+        body.appendChild(item);
+      });
+    }
+
+    dayLeaveModal.show();
+  }
+
+  // Full detail for one leave record, opened from a row in dayLeaveModal.
+  function openLeaveDetailModal(entry) {
+    $('#leaveDetailModalTitle').textContent = entry.employeeCode ? `${entry.name} (${entry.employeeCode})` : entry.name;
+
+    const body = $('#leaveDetailModalBody');
+    body.innerHTML = '';
+
+    const typeBadge = document.createElement('span');
+    typeBadge.className = 'day-leave-type leave-detail-type';
+    typeBadge.style.setProperty('--leave-color', colorForLeaveType(entry.typeId));
+    typeBadge.textContent = entry.typeName;
+    body.appendChild(typeBadge);
+
+    const rows = [
+      ['Dates', formatLeaveRange(entry)],
+      ['Total', `${entry.totalDays} day${entry.totalDays === 1 ? '' : 's'}`],
+      ['Status', 'Approved'],
+      ['Reason', entry.reason || '—']
+    ];
+
+    const dl = document.createElement('dl');
+    dl.className = 'leave-detail-list';
+    rows.forEach(([label, value]) => {
+      const dt = document.createElement('dt');
+      dt.textContent = label;
+      const dd = document.createElement('dd');
+      dd.textContent = value;
+      dl.append(dt, dd);
+    });
+    body.appendChild(dl);
+
+    leaveDetailModal.show();
   }
 
   /* ------------------------------------------------------------------ */
@@ -809,6 +1133,31 @@
     });
 
     holidayModal = new bootstrap.Modal($('#holidayModal'));
+    dayLeaveModal = new bootstrap.Modal($('#dayLeaveModal'));
+    leaveDetailModal = new bootstrap.Modal($('#leaveDetailModal'));
+
+    // Hand off to the shared leave request modal, prefilled with the date
+    // dayLeaveModal was showing. Waits for dayLeaveModal to fully close
+    // first (hidden.bs.modal) so the two Bootstrap modals/backdrops don't
+    // stack on top of each other.
+    $('#dayLeaveNewRequestBtn').addEventListener('click', () => {
+      const key = dayLeaveModalKey;
+      $('#dayLeaveModal').addEventListener('hidden.bs.modal', () => goToNewLeaveRequest(key), { once: true });
+      dayLeaveModal.hide();
+    });
+
+    // Clicking a record in the day view drills into its detail — same
+    // hide-then-show handoff as the button above. Delegated on the list
+    // container since rows are rebuilt on every openDayLeaveModal() call.
+    $('#dayLeaveModalBody').addEventListener('click', (e) => {
+      const row = e.target.closest('.day-leave-item');
+      if (!row) return;
+      const entries = leavesMap.get(dayLeaveModalKey) || [];
+      const entry = entries[Number(row.dataset.index)];
+      if (!entry) return;
+      $('#dayLeaveModal').addEventListener('hidden.bs.modal', () => openLeaveDetailModal(entry), { once: true });
+      dayLeaveModal.hide();
+    });
     $('#holidayForm').addEventListener('submit', onSubmitHoliday);
     $('#holidayDeleteBtn').addEventListener('click', onDeleteHolidayClick);
     $('#addHolidayBtn').addEventListener('click', () => openHolidayModal(null));
@@ -836,9 +1185,11 @@
     showError(null);
     try {
       await loadHolidays();
+      await loadLeaveTypes();
+      await loadLeavesForView();
       if (readOnly) applyReadOnly();
     } catch (err) {
-      showError(`Couldn\u2019t load holidays. ${err && err.message ? err.message : ''}`.trim(), run);
+      showError(`Couldn\u2019t load the calendar. ${err && err.message ? err.message : ''}`.trim(), run);
     }
   }
 
