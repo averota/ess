@@ -1,0 +1,136 @@
+/* =====================================================================
+   ESS — Calendar page (pages/calendar.html)
+   Load AFTER styles.css. Reuses its tokens and shared components
+   (.meta-bar, .panel, .room-manage-card, .table-card, .file-picker,
+   .stat-strip, .modal-overlay, .danger-zone, .toast-stack, .btn-*).
+   Only the calendar grid is unique to this page.
+
+   .cal-card       the whole calendar block (toolbar + weekday row + grid)
+   .cal-toolbar    prev/next arrows + month/year jump selects + Today
+   .cal-grid       7-column grid, row count set via --week-rows so the
+                   whole month fits without scrolling (see holidays.js
+                   fitCalendarHeight()/renderCalendar())
+   .cal-day        one date cell; .is-other-month / .is-today modifiers
+   .cal-holiday-pill  the (at most one, date is UNIQUE) holiday on a day
+   ===================================================================== */
+
+.cal-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  margin-bottom: 20px;
+  min-height: 420px;
+  container: holcal / inline-size;
+}
+
+.cal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.cal-jump {
+  display: flex;
+  gap: 6px;
+}
+.cal-jump select {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.95rem;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.cal-weekdays span {
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.cal-grid {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  grid-template-rows: repeat(var(--week-rows, 6), 1fr);
+  gap: 1px;
+  background: var(--border);
+  min-height: 0;
+}
+
+.cal-day {
+  background: var(--surface);
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.cal-day.is-clickable { cursor: pointer; }
+.cal-day.is-clickable:hover { background: var(--bg); }
+.cal-day.is-other-month { background: var(--bg); }
+.cal-day.is-other-month .cal-day-num { color: var(--ink-faint); }
+
+.cal-day-num {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+.cal-day.is-today .cal-day-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+}
+
+.cal-holiday-pill {
+  border: none;
+  text-align: left;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 6px;
+  border-radius: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.cal-holiday-pill:disabled { cursor: default; }
+
+@container holcal (max-width: 560px) {
+  .cal-day { padding: 3px 4px; gap: 2px; }
+  .cal-day-num { font-size: 0.72rem; }
+  .cal-day.is-today .cal-day-num { width: 18px; height: 18px; }
+  .cal-holiday-pill { font-size: 0.62rem; padding: 2px 4px; }
+  .cal-toolbar { padding: 10px 10px; gap: 6px; }
+  .cal-jump select { padding: 5px 6px; font-size: 0.82rem; }
+}
