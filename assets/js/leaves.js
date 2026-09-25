@@ -45,10 +45,17 @@
 //     those server-side regardless of what the client sends. For an
 //     admin creating on behalf of someone else, that same trigger
 //     auto-approves it (no separate "approve" step needed here).
+//   - total_days is normally computed server-side from working days
+//     (see calculate_leave_request_total_days() in the schema) and the
+//     client's preview (updateDaysPreview()) just mirrors that formula.
+//     Admins get an extra "Manually set total days" checkbox on the New/
+//     Edit modal (manualDaysField) that sends total_days + total_days_manual
+//     = true instead, bypassing the calculation entirely; the same
+//     is_admin() check the trigger already uses for everything else is
+//     what actually enforces this isn't usable by a non-admin, not RLS.
 // =====================================================================
 
 let leaveRequestModal;
-let manageTypesModal;
 let leaveDetailModal;
 
 let myEmployeeId = null;   // employees.id (uuid) — not the human-readable employee_id
@@ -58,6 +65,7 @@ let initialized = false;    // guards against ess:ready firing more than once (w
 
 let leaveTypes = [];        // all rows (active + inactive), for the admin manage-types list
 let activeLeaveTypes = [];  // active-only, for the request form's select
+let weeklyWorkingDays = new Map(); // day_of_week (1=Mon..7=Sun, ISO) -> working_value (0 / 0.5 / 1), from policy_weekly_working_days — lets updateDaysPreview() mirror calculate_leave_request_total_days() exactly instead of just counting calendar days
 let selectableEmployees = []; // who I can file a request for, besides myself — admin: everyone; everyone else: everyone in the same department, their own supervisor included (see list_my_leave_delegates())
 let myReportIds = new Set(); // employees.id of my direct reports (non-admin only; admins already have authority over everyone)
 let reviewCommentSupported = true;    // flipped off if leave_requests.review_comment doesn't exist yet (see loadRequests)
@@ -356,7 +364,6 @@ const leavesContent = document.getElementById('leavesContent');
 const statsGrid = document.getElementById('statsGrid');
 const refreshListBtn = document.getElementById('refreshListBtn');
 const refreshListBtnLabel = document.getElementById('refreshListBtnLabel');
-const manageTypesBtn = document.getElementById('manageTypesBtn');
 const newRequestBtn = document.getElementById('newRequestBtn');
 const exportExcelBtn = document.getElementById('exportExcelBtn');
 
@@ -383,6 +390,10 @@ const endDateInput = document.getElementById('endDateInput');
 const endHalfDayInput = document.getElementById('endHalfDayInput');
 const reasonInput = document.getElementById('reasonInput');
 const daysPreview = document.getElementById('daysPreview');
+const manualDaysField = document.getElementById('manualDaysField');
+const manualDaysToggle = document.getElementById('manualDaysToggle');
+const manualDaysInputWrap = document.getElementById('manualDaysInputWrap');
+const manualDaysInput = document.getElementById('manualDaysInput');
 const leaveRequestSubmitBtn = document.getElementById('leaveRequestSubmitBtn');
 
 const leaveDetailModalEl = document.getElementById('leaveDetailModal');
@@ -390,10 +401,6 @@ const leaveDetailStatus = document.getElementById('leaveDetailStatus');
 const leaveDetailBody = document.getElementById('leaveDetailBody');
 const leaveDetailActions = document.getElementById('leaveDetailActions');
 const leaveDetailCloseBtn = document.getElementById('leaveDetailCloseBtn');
-
-const newLeaveTypeInput = document.getElementById('newLeaveTypeInput');
-const addLeaveTypeBtn = document.getElementById('addLeaveTypeBtn');
-const leaveTypesManageList = document.getElementById('leaveTypesManageList');
 
 // Filter bar (Leave type / Year / Status) — same collapsible design as
 // the employee directory's filter bar in employees.js.
@@ -443,12 +450,11 @@ async function onEssReady(e) {
 
 async function init() {
     leaveRequestModal = new bootstrap.Modal(document.getElementById('leaveRequestModal'));
-    manageTypesModal = new bootstrap.Modal(document.getElementById('manageTypesModal'));
     leaveDetailModal = new bootstrap.Modal(leaveDetailModalEl);
 
-    applyRoleVisibility();
     wireEvents();
     populateYearFilter();
+    manualDaysField.classList.toggle('hidden', !isAdmin);
 
     // Request rows carry their own embedded leave_type / employee names,
     // so the lookups and the requests load together — except that
@@ -456,6 +462,7 @@ async function init() {
     // reports, so the requests fetch waits on that one (skipped for admins).
     await Promise.all([
         loadLeaveTypes(),
+        loadWeeklyWorkingDays(),
         loadSelectableEmployees(),
         loadMyReports().then(loadRequests)
     ]);
@@ -470,21 +477,15 @@ async function init() {
     applyFilters();
 }
 
-function applyRoleVisibility() {
-    manageTypesBtn.classList.toggle('hidden', !isAdmin);
-}
-
 function wireEvents() {
     refreshListBtn.addEventListener('click', onRefreshClick);
     newRequestBtn.addEventListener('click', () => openLeaveRequestModal());
     exportExcelBtn.addEventListener('click', onExportExcelClick);
     leaveRequestForm.addEventListener('submit', onSubmitLeaveRequest);
     [startDateInput, endDateInput, startHalfDayInput, endHalfDayInput].forEach(el =>
-        el.addEventListener('change', updateDaysPreview)
+        el.addEventListener('change', onDateOrHalfDayChange)
     );
-
-    manageTypesBtn.addEventListener('click', openManageTypesModal);
-    addLeaveTypeBtn.addEventListener('click', onAddLeaveType);
+    manualDaysToggle.addEventListener('change', onManualDaysToggleChange);
 
     filterYearInput.addEventListener('change', applyFilters);
     filterStatusInput.addEventListener('change', applyFilters);
@@ -616,6 +617,26 @@ async function loadLeaveTypes() {
     }
     leaveTypes = data || [];
     activeLeaveTypes = leaveTypes.filter(t => t.is_active !== false);
+}
+
+// The weekly working-day pattern from the Policies page (file
+// 03_policies_schemas.sql), used only to make the request form's day
+// preview match what calculate_leave_request_total_days() will actually
+// save server-side — see updateDaysPreview()/computeWorkingDays() below.
+// Read access is open to any signed-in user (policy_weekly_working_days_read),
+// same as the request form already relies on for back-date checks etc.
+// On failure, computeWorkingDays() falls back to a plain calendar-day
+// count rather than blocking the form.
+async function loadWeeklyWorkingDays() {
+    const { data, error } = await sb
+        .from('policy_weekly_working_days')
+        .select('day_of_week, working_value');
+    if (error) {
+        console.error('leaves: could not load weekly working-day policy:', error);
+        weeklyWorkingDays = new Map();
+        return;
+    }
+    weeklyWorkingDays = new Map((data || []).map(d => [d.day_of_week, Number(d.working_value)]));
 }
 
 // Direct reports: the employees I can review leave for as their supervisor.
@@ -953,7 +974,7 @@ function requestSelect() {
         : 'name, employee_id';
     return `
         id, employee_id, leave_type_id, start_date, start_half_day, end_date, end_half_day,
-        total_days, reason, status, rejection_reason, approved_at, created_at, requested_by,${reviewCommentSupported ? ' review_comment,' : ''}
+        total_days, total_days_manual, reason, status, rejection_reason, approved_at, created_at, requested_by,${reviewCommentSupported ? ' review_comment,' : ''}
         employee:employee_id(${employeeCols}),
         leave_type:leave_type_id(leave_type),
         approver:approved_by(name)
@@ -1548,6 +1569,13 @@ function openLeaveRequestModal(requestId = null) {
     leaveRequestForm.reset();
     editingRequestId = requestId;
 
+    // reset() clears the checkbox/number input themselves, but not the
+    // JS-controlled "hidden" class on the wrapper — always start closed,
+    // then reopen it below for a request that's actually overridden.
+    manualDaysToggle.checked = false;
+    manualDaysInputWrap.classList.add('hidden');
+    manualDaysInput.value = '';
+
     if (requestId) {
         const req = allRequests.find(r => r.id === requestId);
         if (!req) return;
@@ -1566,7 +1594,18 @@ function openLeaveRequestModal(requestId = null) {
         endDateInput.value = req.end_date;
         endHalfDayInput.value = req.end_half_day;
         reasonInput.value = req.reason || '';
+        syncEndHalfDayField();
         updateDaysPreview();
+
+        // Already manually overridden (admin-only field, but harmless to
+        // set even if hidden for a non-admin viewer): show it pre-filled
+        // with the existing total rather than the recalculated one, so
+        // reopening the modal doesn't look like it silently changed.
+        if (isAdmin && req.total_days_manual) {
+            manualDaysToggle.checked = true;
+            manualDaysInputWrap.classList.remove('hidden');
+            manualDaysInput.value = Number(req.total_days);
+        }
     } else {
         populateLeaveTypeSelect();
         leaveRequestModalTitle.textContent = 'New leave request';
@@ -1578,15 +1617,80 @@ function openLeaveRequestModal(requestId = null) {
 
         startHalfDayInput.value = 'full';
         endHalfDayInput.value = 'full';
+        syncEndHalfDayField();
         daysPreview.textContent = '';
     }
 
     leaveRequestModal.show();
 }
 
+// JS Date#getDay() is 0=Sun..6=Sat; policy_weekly_working_days.day_of_week
+// is ISO (1=Mon..7=Sun), matching the server's extract(isodow from ...).
+function isoDayOfWeek(date) {
+    return ((date.getDay() + 6) % 7) + 1;
+}
+
+// Same boundary rules as calculate_leave_request_total_days() in
+// 02_leaves_schema.sql — see "Half-day model" there for the full
+// reasoning and worked examples. In short: start_half_day/end_half_day
+// mark WHERE in their date the request begins/ends, not "which half of
+// this one day":
+//   - an interior date (strictly between start and end) is always whole
+//   - the single-day case (start_date = end_date) is whole only if it
+//     both starts from AM/full (not PM) AND ends through PM/full (not
+//     AM) — so AM->PM is a whole day, AM->AM or PM->PM is a half day
+//   - the start date of a multi-day request is whole unless start_half
+//     is 'pm' (then only that date's afternoon counts)
+//   - the end date of a multi-day request is whole unless end_half is
+//     'am' (then only that date's morning counts)
+function isWholeDayRequested(date, startD, endD, startHalf, endHalf) {
+    const isStart = date.getTime() === startD.getTime();
+    const isEnd = date.getTime() === endD.getTime();
+    if (!isStart && !isEnd) return true;
+    if (isStart && isEnd) return startHalf !== 'pm' && endHalf !== 'am';
+    if (isStart) return startHalf !== 'pm';
+    return endHalf !== 'am';
+}
+
+// Mirrors calculate_leave_request_total_days() exactly, so the preview
+// the person sees before submitting matches what the trigger will
+// actually save. Falls back to treating every day as a normal full
+// working day (working_value = 1) if the weekly policy failed to load,
+// so the form still gives a correct estimate rather than none — just
+// without knowing which days are off.
+function computeWorkingDays(startD, endD, startHalf, endHalf) {
+    let total = 0;
+    for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
+        const working = weeklyWorkingDays.size ? (weeklyWorkingDays.get(isoDayOfWeek(d)) ?? 0) : 1;
+        const whole = isWholeDayRequested(d, startD, endD, startHalf, endHalf);
+        total += whole ? working : Math.min(working, 0.5);
+    }
+    return total;
+}
+
+// Same-day + start = 'full' means the whole date either way — the End
+// field has nothing meaningful left to choose, so it's locked to 'full'
+// and disabled instead of asking the person to redundantly confirm it.
+// Any other combination (different dates, or a half-day start) leaves
+// End free to pick.
+function syncEndHalfDayField() {
+    const sameDay = !!startDateInput.value && startDateInput.value === endDateInput.value;
+    const lock = sameDay && startHalfDayInput.value === 'full';
+    endHalfDayInput.disabled = lock;
+    if (lock) endHalfDayInput.value = 'full';
+}
+
+function onDateOrHalfDayChange() {
+    syncEndHalfDayField();
+    updateDaysPreview();
+}
+
 // Client-side preview only — total_days is always authoritative from
-// calculate_leave_request_total_days() server-side; this just mirrors
-// that formula so the person sees an estimate before submitting.
+// calculate_leave_request_total_days() server-side (unless an admin's
+// manual override is active, see onManualDaysToggleChange()); this just
+// mirrors that formula, working days only, so the person sees an
+// accurate estimate before submitting instead of a raw calendar-day
+// count that includes weekends/days off.
 function updateDaysPreview() {
     const start = startDateInput.value;
     const end = endDateInput.value;
@@ -1595,16 +1699,36 @@ function updateDaysPreview() {
     const endD = parseDateOnly(end);
     if (endD < startD) { daysPreview.textContent = 'End date must be on or after the start date.'; return; }
 
-    let days;
-    if (start === end) {
-        days = startHalfDayInput.value === 'full' ? 1 : 0.5;
-    } else {
-        const dayCount = Math.round((endD - startD) / 86400000) + 1;
-        days = dayCount
-            - (startHalfDayInput.value !== 'full' ? 0.5 : 0)
-            - (endHalfDayInput.value !== 'full' ? 0.5 : 0);
+    const days = computeWorkingDays(startD, endD, startHalfDayInput.value, endHalfDayInput.value);
+    daysPreview.innerHTML = `≈ <strong>${days}</strong> working day(s)`;
+
+    // While the manual override is on, keep prefilling the (empty) input
+    // with the calculated figure so the admin has a sane starting point
+    // to adjust from, rather than typing a number from scratch.
+    if (isAdmin && manualDaysToggle.checked && manualDaysInput.value === '') {
+        manualDaysInput.value = days;
     }
-    daysPreview.innerHTML = `≈ <strong>${days}</strong> day(s)`;
+}
+
+// Admin-only: flip between the calculated preview and a free-typed total.
+// Unchecking always reverts to the calculated value — total_days_manual
+// is sent back to the server as false, which also makes the trigger
+// recompute even if dates weren't otherwise touched.
+function onManualDaysToggleChange() {
+    const on = manualDaysToggle.checked;
+    manualDaysInputWrap.classList.toggle('hidden', !on);
+    if (on && manualDaysInput.value === '') {
+        const start = startDateInput.value;
+        const end = endDateInput.value;
+        if (start && end) {
+            const startD = parseDateOnly(start);
+            const endD = parseDateOnly(end);
+            if (endD >= startD) {
+                manualDaysInput.value = computeWorkingDays(startD, endD, startHalfDayInput.value, endHalfDayInput.value);
+            }
+        }
+    }
+    if (!on) manualDaysInput.value = '';
 }
 
 async function onSubmitLeaveRequest(e) {
@@ -1620,9 +1744,26 @@ async function onSubmitLeaveRequest(e) {
         showToast('End date must be on or after the start date.', 'danger');
         return;
     }
-    if (startDate === endDate && startHalfDayInput.value !== endHalfDayInput.value) {
-        showToast('For a single-day request, the start and end half-day must match.', 'danger');
+    if (startDate === endDate && startHalfDayInput.value === 'pm' && endHalfDayInput.value === 'am') {
+        showToast('End time must be later than the start time on the same day.', 'danger');
         return;
+    }
+
+    // Admin manual override fields. total_days_manual is always sent
+    // explicitly (including "false") so that, on an edit, unchecking the
+    // box actually clears a previous override instead of silently
+    // leaving it in place (a partial update only touches the columns
+    // named in the payload — see calculate_leave_request_total_days()
+    // in 02_leaves_schema.sql for why the server trusts this and not
+    // just "was the box checked").
+    let manualDaysFields = { total_days_manual: false };
+    if (isAdmin && manualDaysToggle.checked) {
+        const manualDays = Number(manualDaysInput.value);
+        if (manualDaysInput.value === '' || Number.isNaN(manualDays) || manualDays < 0) {
+            showToast('Enter a valid number of days (0 or more) for the manual override.', 'danger');
+            return;
+        }
+        manualDaysFields = { total_days: manualDays, total_days_manual: true };
     }
 
     // Editing an existing request (admin only) — straight table update,
@@ -1646,7 +1787,8 @@ async function onSubmitLeaveRequest(e) {
             start_half_day: startHalfDayInput.value,
             end_date: endDate,
             end_half_day: endHalfDayInput.value,
-            reason: reasonInput.value.trim() || null
+            reason: reasonInput.value.trim() || null,
+            ...manualDaysFields
         };
 
         leaveRequestSubmitBtn.disabled = true;
@@ -1693,7 +1835,8 @@ async function onSubmitLeaveRequest(e) {
         start_half_day: startHalfDayInput.value,
         end_date: endDate,
         end_half_day: endHalfDayInput.value,
-        reason: reasonInput.value.trim() || null
+        reason: reasonInput.value.trim() || null,
+        ...manualDaysFields
     };
 
     leaveRequestSubmitBtn.disabled = true;
@@ -1831,81 +1974,6 @@ async function onReviewRequest(requestId, decision) {
     await loadRequests();
 }
 
-// ---------------------------------------------------------------------
-// Manage leave types (admin) — add new / enable / disable. Same
-// enable-disable-not-delete pattern as positions/departments/business
-// units in employees.js's lookup manager, since existing requests keep
-// referencing a type even after it's retired from new use.
-// ---------------------------------------------------------------------
-function openManageTypesModal() {
-    newLeaveTypeInput.value = '';
-    renderManageTypesList();
-    manageTypesModal.show();
-}
-
-function renderManageTypesList() {
-    if (leaveTypes.length === 0) {
-        leaveTypesManageList.innerHTML = '<div class="lookup-manage-empty">No leave types yet.</div>';
-        return;
-    }
-    leaveTypesManageList.innerHTML = leaveTypes.map(t => `
-        <div class="lookup-manage-row ${t.is_active === false ? 'is-disabled' : ''}">
-            <span class="lookup-manage-name">${escapeHtml(t.leave_type)}</span>
-            <div class="lookup-manage-row-actions">
-                <button type="button" class="btn btn-sm ${t.is_active === false ? 'btn-outline-accent' : 'btn-ghost'}" data-toggle-type="${t.leave_type_id}" data-next="${t.is_active === false}">
-                    ${t.is_active === false ? 'Enable' : 'Disable'}
-                </button>
-            </div>
-        </div>
-    `).join('');
-
-    leaveTypesManageList.querySelectorAll('[data-toggle-type]').forEach(btn => {
-        btn.addEventListener('click', () => onToggleLeaveType(btn.dataset.toggleType, btn.dataset.next === 'true'));
-    });
-}
-
-async function onAddLeaveType() {
-    const name = newLeaveTypeInput.value.trim();
-    if (!name) { showToast('Enter a name for the new leave type.', 'danger'); return; }
-
-    addLeaveTypeBtn.disabled = true;
-    let error;
-    try {
-        ({ error } = await sb.from('leave_types').insert({ leave_type: name }));
-    } catch (err) {
-        error = err;
-    } finally {
-        addLeaveTypeBtn.disabled = false;
-    }
-
-    if (error) {
-        if (error.code === '23505') {
-            showToast(`"${name}" already exists.`, 'danger');
-        } else {
-            showToast('Could not add leave type: ' + error.message, 'danger');
-        }
-        return;
-    }
-
-    newLeaveTypeInput.value = '';
-    await loadLeaveTypes();
-    populateLeaveTypeSelect();
-    populateLeaveTypeFilter();
-    renderManageTypesList();
-    showToast('Leave type added.', 'success');
-}
-
-async function onToggleLeaveType(leaveTypeId, nextActive) {
-    const { error } = await sb.from('leave_types')
-        .update({ is_active: nextActive })
-        .eq('leave_type_id', leaveTypeId);
-    if (error) {
-        showToast('Could not update leave type: ' + error.message, 'danger');
-        return;
-    }
-    await loadLeaveTypes();
-    populateLeaveTypeSelect();
-    populateLeaveTypeFilter();
-    renderManageTypesList();
-    showToast(nextActive ? 'Leave type enabled.' : 'Leave type disabled.', 'success');
-}
+// Leave types are now managed (enable/disable) from the Policies page,
+// Leave Types tab — see policies.js. This file only reads leave_types
+// (loadLeaveTypes) to populate the request form and filters.

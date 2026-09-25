@@ -525,6 +525,50 @@
     return row.is_active === false;
   }
 
+  // Reflects a leave type's active state in both the header flag and the
+  // status button. Same enable-disable-not-delete pattern this replaces
+  // from leaves.js: a type is never deleted, since past leave requests
+  // keep referencing it — disabling it only hides it from new requests
+  // (see leaves.js's activeLeaveTypes filter).
+  function paintLeaveTypeStatus(root, disabled) {
+    const nameEl = $('.lt-name', root);
+    let tag = $('.policy-flag--muted', nameEl);
+    if (disabled && !tag) {
+      tag = document.createElement('span');
+      tag.className = 'policy-flag policy-flag--muted';
+      tag.textContent = 'Disabled';
+      nameEl.appendChild(tag);
+    } else if (!disabled && tag) {
+      tag.remove();
+    }
+    const btn = $('[data-toggle-active]', root);
+    btn.textContent = disabled ? 'Enable' : 'Disable';
+    btn.classList.toggle('btn-ghost', !disabled);
+    btn.classList.toggle('btn-outline-accent', disabled);
+  }
+
+  async function onToggleLeaveTypeActive(root, lt) {
+    const btn = $('[data-toggle-active]', root);
+    if (readOnly || btn.disabled) return;
+    const nextActive = lt.disabled;   // disabled -> enable; enabled -> disable
+    btn.disabled = true;
+    try {
+      const { data, error } = await db.from('leave_types')
+        .update({ is_active: nextActive })
+        .eq('leave_type_id', lt.id)
+        .select('leave_type_id, is_active');
+      if (error) throw error;
+      if (!data || !data.length) throw new NoRowsError();
+      lt.disabled = !nextActive;
+      paintLeaveTypeStatus(root, lt.disabled);
+      toast(`${lt.label} ${lt.disabled ? 'disabled' : 'enabled'}.`, 'success');
+    } catch (err) {
+      toast(errorMessage(err), 'danger');
+    } finally {
+      btn.disabled = readOnly;
+    }
+  }
+
   function setCell(root, key, text, muted) {
     const span = $(`[data-summary="${key}"]`, root);
     span.textContent = text;
@@ -625,38 +669,90 @@
     });
   }
 
+  // Builds one .lt-item from #ltItemTemplate, wires its accordion section
+  // and its enable/disable button, and loads it with a policy row (or
+  // null, for a brand-new leave type that has no policy yet). Shared by
+  // the initial render and by onAddLeaveType() below.
+  function buildLeaveTypeItem(lt, policyRow, openByDefault) {
+    const tpl = $('#ltItemTemplate');
+    const holder = document.createElement('div');
+    holder.innerHTML = tpl.innerHTML.split('{{id}}').join(String(lt.id));
+    const root = holder.firstElementChild;
+    $('[data-lt-name]', root).textContent = lt.label;
+    paintLeaveTypeStatus(root, lt.disabled);
+    const statusBtn = $('[data-toggle-active]', root);
+    statusBtn.disabled = readOnly;
+    statusBtn.addEventListener('click', (e) => {
+      e.stopPropagation();   // sits next to the accordion toggle; don't let a click bubble into it
+      onToggleLeaveTypeActive(root, lt);
+    });
+    $$('select[data-month-select]', root).forEach(fillMonths);
+    if (openByDefault) {
+      $('.lt-toggle', root).classList.remove('collapsed');
+      $('.lt-toggle', root).setAttribute('aria-expanded', 'true');
+      $('.collapse', root).classList.add('show');
+    }
+    const section = initLeaveTypeSection(root, lt);
+    section.load(policyRow || null);
+    sections.leaveTypes.push(section);
+    return root;
+  }
+
   function renderLeaveTypes(types, policies) {
     const list = $('#ltList');
-    const tpl = $('#ltItemTemplate');
     $$('.lt-item', list).forEach((el) => el.remove());
     sections.leaveTypes = [];
 
     types.forEach((lt, index) => {
-      const holder = document.createElement('div');
-      holder.innerHTML = tpl.innerHTML.split('{{id}}').join(String(lt.id));
-      const root = holder.firstElementChild;
-      $('[data-lt-name]', root).textContent = lt.label;
-      if (lt.disabled) {
-        const tag = document.createElement('span');
-        tag.className = 'policy-flag policy-flag--muted';
-        tag.textContent = 'Disabled';
-        $('.lt-name', root).appendChild(tag);
-      }
-      $$('select[data-month-select]', root).forEach(fillMonths);
-      if (index === 0) {   // first item starts open, as in the design
-        $('.lt-toggle', root).classList.remove('collapsed');
-        $('.lt-toggle', root).setAttribute('aria-expanded', 'true');
-        $('.collapse', root).classList.add('show');
-      }
-      list.appendChild(root);
-      const section = initLeaveTypeSection(root, lt);
-      section.load(policies.get(lt.id) || null);
-      sections.leaveTypes.push(section);
+      // First item starts open, as in the design.
+      list.appendChild(buildLeaveTypeItem(lt, policies.get(lt.id), index === 0));
     });
 
     $('#ltLoading').classList.add('hidden');
     list.classList.toggle('hidden', types.length === 0);
     $('#leaveTypesEmpty').classList.toggle('hidden', types.length !== 0);
+  }
+
+  // ---- Add leave type -------------------------------------------------
+  // Unlike the enable/disable toggle (an update, silently blocked by RLS
+  // for a non-admin — see NoRowsError), an insert blocked by RLS's WITH
+  // CHECK comes back as a real error, so this only needs errorMessage().
+  async function onAddLeaveType() {
+    const input = $('#newLeaveTypeInput');
+    const btn = $('#addLeaveTypeBtn');
+    const name = input.value.trim();
+    if (!name) {
+      input.classList.add('is-invalid');
+      input.focus();
+      toast('Enter a name for the new leave type.', 'danger');
+      return;
+    }
+    input.classList.remove('is-invalid');
+    btn.disabled = true;
+    try {
+      const { data, error } = await db.from('leave_types')
+        .insert({ leave_type: name })
+        .select('leave_type_id, leave_type, is_active');
+      if (error) throw error;
+      if (!data || !data.length) throw new NoRowsError();
+      const row = data[0];
+      const lt = { id: row.leave_type_id, label: leaveTypeLabel(row), disabled: leaveTypeIsDisabled(row) };
+      const list = $('#ltList');
+      list.appendChild(buildLeaveTypeItem(lt, null, false));
+      list.classList.remove('hidden');
+      $('#leaveTypesEmpty').classList.add('hidden');
+      input.value = '';
+      toast(`"${lt.label}" added.`, 'success');
+    } catch (err) {
+      if (err && err.code === '23505') {
+        input.classList.add('is-invalid');
+        toast(`"${name}" already exists.`, 'danger');
+      } else {
+        toast(errorMessage(err), 'danger');
+      }
+    } finally {
+      btn.disabled = readOnly;
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -706,7 +802,7 @@
   function applyReadOnly() {
     $('.policies-page').classList.add('is-readonly');
     $('#policiesReadOnly').classList.remove('hidden');
-    $$('#policyPanes input, #policyPanes select').forEach((el) => { el.disabled = true; });
+    $$('#policyPanes input, #policyPanes select, #policyPanes [data-toggle-active], #addLeaveTypeBtn').forEach((el) => { el.disabled = true; });
     allSections().forEach((s) => s.repaint());
   }
 
@@ -748,6 +844,14 @@
     initWeekly();
     initMonthly();
     initCutoff();
+
+    const addBtn = $('#addLeaveTypeBtn');
+    const addInput = $('#newLeaveTypeInput');
+    addBtn.addEventListener('click', onAddLeaveType);
+    addInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); onAddLeaveType(); }
+    });
+    addInput.addEventListener('input', () => addInput.classList.remove('is-invalid'));
 
     window.addEventListener('beforeunload', (e) => {
       if (allSections().some((s) => s.isDirty())) {

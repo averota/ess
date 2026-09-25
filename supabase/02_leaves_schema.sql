@@ -99,11 +99,42 @@
 --
 -- Half-day model:
 --   - start_half_day / end_half_day are each 'full', 'am', or 'pm'.
---   - For a single-day request (start_date = end_date) they must match
---     each other — they describe the one day being requested.
+--   - Read them as boundary markers, not "which half of this one day":
+--     start_half_day says which point IN the start date the request
+--     begins from, and end_half_day says which point IN the end date it
+--     runs through:
+--       * start_half_day 'full' or 'am' -> begins at the START of
+--         start_date (so the whole start date is included, unless
+--         end_half_day cuts it short — see the single-day case below).
+--       * start_half_day 'pm'           -> begins at the MIDPOINT of
+--         start_date (morning of start_date is NOT included).
+--       * end_half_day   'full' or 'pm' -> runs through the END of
+--         end_date (so the whole end date is included).
+--       * end_half_day   'am'           -> runs through the MIDPOINT of
+--         end_date only (afternoon of end_date is NOT included).
+--   - A request always covers the SAME calendar day or LATER — the
+--     start_date=end_date case is what lets one field say "morning
+--     only" and the other say "through the afternoon", combining into
+--     a single date. Worked examples (assuming every date involved is a
+--     normal full working day per policy_weekly_working_days):
+--       10th(AM)  -> 10th(PM)  = 1 day   (whole day: covers both halves)
+--       10th(AM)  -> 10th(AM)  = 0.5 day (morning only)
+--       10th(PM)  -> 10th(PM)  = 0.5 day (afternoon only)
+--       10th(PM)  -> 11th(AM)  = 1 day   (10th afternoon + 11th morning)
+--       10th(PM)  -> 11th(PM)  = 1.5 day (10th afternoon + 11th whole)
+--       10th(PM)  -> 10th(AM)  = rejected — end boundary (midpoint) falls
+--                                 BEFORE the start boundary (midpoint) on
+--                                 the same date. Blocked by
+--                                 leave_requests_single_day_half_match so
+--                                 it never reaches the calculation.
+--       10th(Full)-> 10th       = 1 day (same date, start is 'full': the
+--                                 client can leave end_half_day at its
+--                                 'full' default without asking again —
+--                                 see leaves.js's manual-day-count note).
 --   - total_days is computed automatically by
 --     trg_leave_requests_calc_total_days on insert/update; never set it
---     directly from the client.
+--     directly from the client (see "Admin manual override" below for
+--     the one sanctioned exception).
 --
 -- Working-day model (total_days):
 --   total_days counts WORKING days, not calendar days, using the weekly
@@ -111,13 +142,23 @@
 --   (public.policy_weekly_working_days: Mon-Sun, 0 = day off, 0.5 = half
 --   day, 1 = full day). Each date in start_date..end_date contributes
 --   that weekday's working value:
---     * a full-day request on a full working day (1)   counts 1
---     * a full-day request on a half working day (0.5) counts 0.5
---     * a full-day request on a day off (0)            counts 0
---     * an 'am'/'pm' half on the first or last day     counts half a
---       day, but never more than that day's working value (so a half
---       day taken on a 0.5 working day still counts 0.5, and on a day
---       off still counts 0)
+--     * a date strictly BETWEEN start_date and end_date is always
+--       "whole" for that date, regardless of the half-day flags (which
+--       only describe the two boundary dates) — counts that weekday's
+--       working_value as-is (1, 0.5, or 0).
+--     * the start date (in a multi-day request) is "whole" unless
+--       start_half_day = 'pm', in which case only that date's afternoon
+--       is requested.
+--     * the end date (in a multi-day request) is "whole" unless
+--       end_half_day = 'am', in which case only that date's morning is
+--       requested.
+--     * a single-day request (start_date = end_date) is "whole" only
+--       when BOTH start_half_day <> 'pm' AND end_half_day <> 'am' (see
+--       the worked examples above) — otherwise it's a half day.
+--     * a "whole" date counts its full working_value (1, 0.5, or 0); a
+--       half date counts least(working_value, 0.5) — so a half-day
+--       request on a policy half-working-day still counts 0.5 (not
+--       stacked), and on a day off still counts 0.
 --   Example with the default Mon-Fri pattern: Fri to Mon (both full
 --   days) = 2 days, not 4.
 --   The value is fixed when the request is inserted or its dates/half-
@@ -125,6 +166,17 @@
 --   rewrite existing requests, so approved history stays as it was.
 --   A request whose dates fall entirely on days off comes out as 0.
 --   Public holidays are not modelled.
+--
+--   Admin manual override: an admin may instead type total_days
+--   directly (leave_requests.total_days_manual = true). When that flag
+--   is set AND the row is being written by an actual admin (checked via
+--   is_admin() inside the trigger, not trusted from the client),
+--   calculate_leave_request_total_days() skips the calculation above
+--   entirely and keeps whatever value was given (still bound by
+--   leave_requests_total_days_check, 0-366). Any other write — an
+--   insert, a non-admin's edit, or the flag being turned back off —
+--   always gets the calculated value, and the flag is force-cleared, so
+--   a stale override can't silently survive a later plain date edit.
 -- =====================================================================
 
 
@@ -181,7 +233,8 @@ create table if not exists public.leave_requests (
     start_half_day      text not null default 'full',
     end_date            date not null,
     end_half_day        text not null default 'full',
-    total_days          numeric(4,1) not null default 0, -- computed by trigger, do not set directly
+    total_days          numeric(4,1) not null default 0, -- computed by trigger, unless total_days_manual = true (admin override)
+    total_days_manual   boolean not null default false,  -- true = an admin typed total_days directly; trigger skips the working-day calc. See calculate_leave_request_total_days().
     reason              text,
     status              smallint not null default 0 references public.leave_statuses (status_id),
     requested_by        uuid not null references public.employees (id), -- who submitted it: self, or an admin acting on someone's behalf
@@ -196,7 +249,7 @@ create table if not exists public.leave_requests (
     constraint leave_requests_start_half_check check (start_half_day in ('full', 'am', 'pm')),
     constraint leave_requests_end_half_check check (end_half_day in ('full', 'am', 'pm')),
     constraint leave_requests_single_day_half_match check (
-        start_date <> end_date or start_half_day = end_half_day
+        start_date <> end_date or not (start_half_day = 'pm' and end_half_day = 'am')
     ),
     constraint leave_requests_rejection_reason_check check (
         status <> 2 or rejection_reason is not null -- a rejection must say why
@@ -204,8 +257,8 @@ create table if not exists public.leave_requests (
 );
 
 -- Upgrade path for databases whose leave_requests table predates
--- review_comment (CREATE TABLE IF NOT EXISTS above won't add columns to
--- an existing table). No-ops on a fresh install.
+-- review_comment / total_days_manual (CREATE TABLE IF NOT EXISTS above
+-- won't add columns to an existing table). No-ops on a fresh install.
 alter table public.leave_requests
     add column if not exists review_comment text;
 
@@ -214,6 +267,28 @@ alter table public.leave_requests
 alter table public.leave_requests
     add constraint leave_requests_review_comment_len_check
     check (review_comment is null or char_length(review_comment) <= 500);
+
+alter table public.leave_requests
+    add column if not exists total_days_manual boolean not null default false;
+
+-- Upgrade path: relax the single-day check to allow AM->PM (a whole
+-- day, see "Half-day model" above) on an existing database whose
+-- constraint predates that — the CREATE TABLE IF NOT EXISTS above only
+-- applies to a fresh install.
+alter table public.leave_requests
+    drop constraint if exists leave_requests_single_day_half_match;
+alter table public.leave_requests
+    add constraint leave_requests_single_day_half_match check (
+        start_date <> end_date or not (start_half_day = 'pm' and end_half_day = 'am')
+    );
+
+-- Sanity bound on total_days regardless of whether it came from the
+-- calculation or an admin override — catches typos like "250" days.
+alter table public.leave_requests
+    drop constraint if exists leave_requests_total_days_check;
+alter table public.leave_requests
+    add constraint leave_requests_total_days_check
+    check (total_days >= 0 and total_days <= 366);
 
 create index if not exists idx_leave_requests_employee_id    on public.leave_requests (employee_id);
 create index if not exists idx_leave_requests_leave_type_id  on public.leave_requests (leave_type_id);
@@ -490,10 +565,17 @@ create trigger trg_leave_requests_defaults
 -- ---------------------------------------------------------------------
 -- Trigger: compute total_days from the date range + half-day flags,
 -- counting only working days per public.policy_weekly_working_days
--- (file 03). See "Working-day model" in the header for the rules.
+-- (file 03) — unless an admin has manually overridden it (see
+-- "Admin manual override" in the header note above).
 --
 -- SECURITY DEFINER so the calculation never depends on the caller's
--- read access to the policy table.
+-- read access to the policy table. is_admin() inside a SECURITY
+-- DEFINER function still checks the real calling user (it reads
+-- auth.uid()/the employees row via current_employee_uuid(), not
+-- anything client-supplied), which is what makes the override branch
+-- safe: a non-admin can set total_days_manual = true on their own
+-- pending row (nothing in RLS stops that column specifically), but this
+-- function ignores it and recalculates anyway.
 -- ---------------------------------------------------------------------
 create or replace function public.calculate_leave_request_total_days()
 returns trigger
@@ -502,14 +584,55 @@ security definer
 set search_path = ''
 as $$
 begin
+    if new.total_days_manual and public.is_admin() then
+        -- Admin override: trust total_days exactly as given (still
+        -- bound by leave_requests_total_days_check) and skip the
+        -- working-day calculation entirely.
+        return new;
+    end if;
+
+    -- Every other case — insert, a normal edit, or a non-admin trying to
+    -- set the flag — always gets the calculated value, and the flag is
+    -- cleared so it can't be inherited by a later plain edit.
+    new.total_days_manual := false;
+
     select coalesce(sum(
                case
-                   -- 'am'/'pm' on the first or last day: half a day at
-                   -- most, and never more than that weekday's value
-                   when (d.leave_day = new.start_date and new.start_half_day <> 'full')
-                     or (d.leave_day = new.end_date   and new.end_half_day   <> 'full')
-                   then least(w.working_value, 0.5)
-                   else w.working_value
+                   -- Interior day (strictly between start and end):
+                   -- always whole, at that weekday's plain policy value —
+                   -- the half-day flags only ever describe the two
+                   -- boundary dates.
+                   when d.leave_day <> new.start_date and d.leave_day <> new.end_date
+                     then w.working_value
+
+                   -- Single-day request (start_date = end_date): whole
+                   -- only if it both starts from AM/full (not PM) AND
+                   -- runs through PM/full (not AM) — e.g. AM->PM is a
+                   -- whole day, AM->AM or PM->PM is a half day. PM->AM
+                   -- (end before start on the same date) can't reach
+                   -- here: leave_requests_single_day_half_match rejects
+                   -- it at write time.
+                   when d.leave_day = new.start_date and d.leave_day = new.end_date
+                     then case when new.start_half_day <> 'pm' and new.end_half_day <> 'am'
+                               then w.working_value
+                               else least(w.working_value, 0.5)
+                          end
+
+                   -- Start of a multi-day request: whole unless it
+                   -- starts 'pm' (then only that date's afternoon counts).
+                   when d.leave_day = new.start_date
+                     then case when new.start_half_day <> 'pm'
+                               then w.working_value
+                               else least(w.working_value, 0.5)
+                          end
+
+                   -- End of a multi-day request: whole unless it ends
+                   -- 'am' (then only that date's morning counts).
+                   else
+                     case when new.end_half_day <> 'am'
+                          then w.working_value
+                          else least(w.working_value, 0.5)
+                     end
                end
            ), 0)
       into new.total_days
@@ -526,7 +649,9 @@ $$;
 
 drop trigger if exists trg_leave_requests_calc_total_days on public.leave_requests;
 create trigger trg_leave_requests_calc_total_days
-    before insert or update of start_date, end_date, start_half_day, end_half_day
+    before insert or update of
+        start_date, end_date, start_half_day, end_half_day,
+        total_days, total_days_manual
     on public.leave_requests
     for each row
     execute function public.calculate_leave_request_total_days();
