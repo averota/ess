@@ -3,6 +3,6 @@ Thumbs.db
 *.local
 node_modules/
 
-# Ignore the entire Supabase and project data directory
-supabase/
+# Ignore the entire Supabase admin and project data directory
+supabase/01_super_admin.sql
 assets/config.js
