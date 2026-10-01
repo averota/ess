@@ -4,10 +4,12 @@
 --
 -- Re-running this script: fully idempotent. Table/function/trigger/policy
 -- DDL uses IF NOT EXISTS / CREATE OR REPLACE / DROP...IF EXISTS + CREATE.
--- All seed data (lookup tables and sample employees) uses
--- ON CONFLICT DO NOTHING, so re-running never overwrites or deletes
--- existing rows — including edits made to previously-seeded data, or any
--- real employees added since.
+-- Lookup seed data (roles, genders, positions, departments, business units)
+-- uses ON CONFLICT DO NOTHING. Sample employees are inserted ONLY when
+-- public.employees is completely empty (first run on a fresh database), so
+-- re-running never overwrites or deletes existing rows and never re-adds
+-- sample people once any employee exists — real or sample, even if the
+-- samples were later deleted.
 --
 -- Auth linking model (no service_role key required):
 --   - employees.email is optional and unique. Set it whenever an
@@ -366,41 +368,49 @@ where e.auth_user_id is null
   and lower(trim(e.email)) = lower(trim(u.email));
 
 
--- Sample employees. Idempotent via ON CONFLICT (email) DO NOTHING below —
--- rows are inserted once and never touched again on subsequent runs, so
--- re-running this script never overwrites or deletes real employee data
--- (including edits made to these same sample rows after the first run).
-insert into public.employees
-    (name, gender, post_id, dept_id, bu_id, hired_date, last_day, role, email)
-select v.name, v.gender, p.post_id, d.dept_id, b.bu_id, v.hired_date::date, v.last_day::date, v.role, v.email
-from (
-    values
-        ('Rotha Mek',       0, 'HR Executive',           'Human Resources',           'Headquarters',             '2021-09-01', null,         1, 'admin@example.com'),
-        ('Sokha Chan',      0, 'HR Executive',            'Human Resources',           'Headquarters',             '2021-03-15', null,         0, 'sokha.chan@company.com'),
-        ('Dara Pich',       1, 'Software Engineer',       'Information Technology',    'Headquarters',             '2022-06-01', null,         0, 'dara.pich@company.com'),
-        ('Sreymom Kim',     0, 'Accountant',              'Finance',                   'Headquarters',             '2020-01-10', null,         0, 'sreymom.kim@company.com'),
-        ('Vichet Ly',       1, 'Sales Manager',           'Sales',                     'Regional Branch - North',  '2019-09-01', null,         0, 'vichet.ly@company.com'),
-        ('Bopha Sok',       0, 'Operations Supervisor',   'Operations',                'Regional Branch - South',  '2023-02-20', null,         0, 'bopha.sok@company.com'),
-        ('Rithy Vong',      1, 'Software Engineer',       'Information Technology',    'Headquarters',             '2018-11-05', '2024-12-31', 0, 'rithy.vong@company.com')
-) as v(name, gender, position, department, business_unit, hired_date, last_day, role, email)
-join public.positions p on p.position = v.position
-join public.departments d on d.department = v.department
-join public.business_units b on b.business_unit = v.business_unit
-on conflict (email) do nothing;
+-- Sample employees: inserted ONLY when public.employees is empty (first run
+-- on a fresh database). If any employee exists the whole block is skipped,
+-- so re-running never adds sample rows next to real data, and never touches
+-- edits to rows created earlier. The supervisor assignment sits inside the
+-- same guard, so it only applies to sample rows created by this very run.
+do $$
+begin
+    if exists (select 1 from public.employees) then
+        raise notice 'public.employees is not empty — sample employees skipped';
+        return;
+    end if;
 
--- Optional demo data: give the other sample employees a supervisor
--- (Rotha Mek). Gated on supervisor_id is null so this only ever fills in
--- a still-blank value — never overwrites a manual reassignment made
--- after the first run.
-update public.employees emp
-set supervisor_id = sup.id
-from public.employees sup
-where sup.email = 'admin@example.com'
-  and emp.email in (
-      'sokha.chan@company.com', 'dara.pich@company.com', 'sreymom.kim@company.com',
-      'vichet.ly@company.com', 'bopha.sok@company.com', 'rithy.vong@company.com'
-  )
-  and emp.supervisor_id is null;
+    insert into public.employees
+        (name, gender, post_id, dept_id, bu_id, hired_date, last_day, role, email)
+    select v.name, v.gender, p.post_id, d.dept_id, b.bu_id, v.hired_date::date, v.last_day::date, v.role, v.email
+    from (
+        values
+            ('Rotha Mek',       0, 'HR Executive',           'Human Resources',           'Headquarters',             '2021-09-01', null,         1, 'admin@example.com'),
+            ('Sokha Chan',      0, 'HR Executive',            'Human Resources',           'Headquarters',             '2021-03-15', null,         0, 'sokha.chan@company.com'),
+            ('Dara Pich',       1, 'Software Engineer',       'Information Technology',    'Headquarters',             '2022-06-01', null,         0, 'dara.pich@company.com'),
+            ('Sreymom Kim',     0, 'Accountant',              'Finance',                   'Headquarters',             '2020-01-10', null,         0, 'sreymom.kim@company.com'),
+            ('Vichet Ly',       1, 'Sales Manager',           'Sales',                     'Regional Branch - North',  '2019-09-01', null,         0, 'vichet.ly@company.com'),
+            ('Bopha Sok',       0, 'Operations Supervisor',   'Operations',                'Regional Branch - South',  '2023-02-20', null,         0, 'bopha.sok@company.com'),
+            ('Rithy Vong',      1, 'Software Engineer',       'Information Technology',    'Headquarters',             '2018-11-05', '2024-12-31', 0, 'rithy.vong@company.com')
+    ) as v(name, gender, position, department, business_unit, hired_date, last_day, role, email)
+    join public.positions p on p.position = v.position
+    join public.departments d on d.department = v.department
+    join public.business_units b on b.business_unit = v.business_unit
+    on conflict (email) do nothing;
+
+    -- Demo data: make Rotha Mek the supervisor of the other sample employees.
+    update public.employees emp
+    set supervisor_id = sup.id
+    from public.employees sup
+    where sup.email = 'admin@example.com'
+      and emp.email in (
+          'sokha.chan@company.com', 'dara.pich@company.com', 'sreymom.kim@company.com',
+          'vichet.ly@company.com', 'bopha.sok@company.com', 'rithy.vong@company.com'
+      )
+      and emp.supervisor_id is null;
+
+end;
+$$;
 
 
 -- =====================================================================

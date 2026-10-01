@@ -17,7 +17,9 @@
    .cal-leave-pill   one leave entry; tint comes from --leave-color (JS).
                      Room mode reuses it (and .cal-leave-list/.cal-leave-more)
                      for booking pills, with --leave-color = the room's colour.
-   .cal-toolbar-views mode toggle (Leave | Rooms) + view toggle (Grid | Holidays)
+   .cal-toolbar-views mode toggle (Leave | Rooms) + view toggle (Grid | Holidays in
+                     Leave mode, Grid | Gantt in Rooms mode — see setMode() in calendar.js)
+   .cal-gantt        Rooms-mode day timeline, see "Gantt day view" at the end
    .cal-footer       static legend (holiday/today) + #calLegend (leave types)
    ===================================================================== */
 
@@ -57,41 +59,50 @@
   font-family: 'Inter', system-ui, sans-serif;
 }
 
-/* ---------- Toolbar ---------- */
+/* ---------- Toolbar ----------
+   One control height (--cal-ctl-h) for everything in the bar: the segmented
+   groups (.cal-nav), the selects and the day picker. Buttons inside a group
+   fill it, so every button is the same height too. */
 .cal-toolbar {
+  --cal-ctl-h: 32px;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px;
-  padding: 14px 18px;
+  gap: 8px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--cal-s200);
   flex-shrink: 0;
 }
 
 .cal-nav {
   display: inline-flex;
-  align-items: center;
+  align-items: stretch;
   gap: 2px;
-  padding: 4px;
+  box-sizing: border-box;
+  height: var(--cal-ctl-h);
+  padding: 2px;
   background: var(--cal-s100);
   border: 1px solid var(--cal-s200);
-  border-radius: 6px;   /* = employees .view-switcher-group */
+  border-radius: var(--cal-radius-sm);
 }
 .cal-nav-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 30px;
-  height: 30px;
-  padding: 0 8px;
+  gap: 6px;
+  min-width: 26px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 4px;   /* = employees .view-switcher-btn */
+  border-radius: 4px;
   background: transparent;
   color: var(--cal-s700);
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
   transition: background 0.15s, color 0.15s, box-shadow 0.15s;
 }
+.cal-nav-btn .bi { font-size: 0.82rem; line-height: 1; }
 .cal-nav-btn:hover,
 .cal-nav-btn:focus-visible {
   background: #fff;
@@ -101,20 +112,27 @@
 }
 .cal-nav-today { padding: 0 12px; }
 
-.cal-jump { display: flex; gap: 8px; }
-.cal-jump .form-select {
+.cal-jump { display: flex; gap: 4px; }
+.cal-jump .form-select,
+.cal-jump .form-control {
+  box-sizing: border-box;
   width: auto;
-  min-width: 96px;
+  height: var(--cal-ctl-h);
+  min-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
   border-color: var(--cal-s200);
   border-radius: var(--cal-radius-sm);
   background-color: var(--cal-s50);
   color: var(--cal-s900);
+  font-size: 0.78rem;
   font-weight: 700;
-  font-size: 0.8rem;
-  padding-top: 0.3rem;
-  padding-bottom: 0.3rem;
+  line-height: 1;
 }
-.cal-jump .form-select:focus {
+.cal-jump .form-select { min-width: 84px; padding-left: 10px; padding-right: 28px; background-position: right 8px center; background-size: 12px 9px; }
+.cal-jump .form-control { padding-left: 10px; padding-right: 8px; }
+.cal-jump .form-select:focus,
+.cal-jump .form-control:focus {
   border-color: var(--cal-brand);
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.18);
 }
@@ -475,9 +493,11 @@ body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
 
 /* ---------- Compact layout when the card itself is narrow ---------- */
 @container holcal (max-width: 560px) {
-  .cal-toolbar { padding: 10px; gap: 8px; }
+  .cal-toolbar { padding: 8px 10px; gap: 6px; }
   .cal-jump { flex: 1 1 auto; }
-  .cal-jump .form-select { flex: 1 1 0; min-width: 0; font-size: 0.82rem; }
+  .cal-jump .form-select,
+  .cal-jump .form-control { flex: 1 1 0; min-width: 0; }
+  .cal-view-toggle .nav-label { display: none; }
   .cal-weekdays span { font-size: 0.6rem; letter-spacing: 0.04em; }
   .cal-day { padding: 3px 4px; gap: 2px; }
   .cal-day-num { font-size: 0.64rem; }
@@ -569,7 +589,7 @@ body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
   justify-content: flex-end;
   gap: 8px;
 }
-.cal-jump#roomFilterWrap .form-select { min-width: 150px; max-width: 220px; }
+.cal-jump#roomFilterWrap .form-select { min-width: 130px; max-width: 200px; }
 
 /* ---------- Room booking modal (compact, sectioned redesign) ----------
    Everything is scoped to #roomBookingModal. The design tokens below are
@@ -934,3 +954,160 @@ body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
 .confirm-choice input { margin-top: 3px; accent-color: var(--cal-brand); }
 .confirm-choice-title { display: block; color: var(--cal-s900); font-size: 0.82rem; font-weight: 700; }
 .confirm-choice-hint { display: block; color: var(--cal-s500); font-size: 0.72rem; }
+
+/* =====================================================================
+   Gantt day view (Rooms mode) — markup #calGantt in calendar.html,
+   rendered by renderGantt() in calendar.js. The header has one column per
+   hour, each room track two per hour (30-min slots); both counts come
+   from --gantt-hours / --gantt-slots, set by calendar.js.
+   ===================================================================== */
+.cal-gantt { --gantt-side: 200px; display: flex; flex-direction: column; flex: 1 1 auto; background: #fff; }
+
+.gantt-date-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 18px;
+  background: var(--cal-s50);
+  border-bottom: 1px solid var(--cal-s200);
+}
+.gantt-date-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.gantt-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--cal-radius-sm);
+  background: var(--cal-brand-soft);
+  color: var(--cal-brand-dark);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.gantt-date-label { color: var(--cal-s900); font-size: 0.86rem; font-weight: 800; }
+.gantt-hint { display: inline-flex; align-items: center; gap: 6px; color: var(--cal-s500); font-size: 0.7rem; font-weight: 600; }
+.gantt-hint-dot { width: 10px; height: 10px; border-radius: 50%; background: #10b981; }
+
+.gantt-scroll { overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--cal-s200) transparent; }
+.gantt-table { display: flex; flex-direction: column; min-width: 1100px; position: relative; }
+
+.gantt-header-row { display: flex; background: var(--cal-s50); border-bottom: 1px solid var(--cal-s200); }
+.gantt-room-corner,
+.gantt-room-sidebar {
+  position: sticky;
+  left: 0;
+  flex: 0 0 var(--gantt-side);
+  width: var(--gantt-side);
+  border-right: 1px solid var(--cal-s200);
+}
+.gantt-room-corner {
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--cal-s50);
+  color: var(--cal-s500);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.gantt-corner-sub { color: var(--cal-s400); font-size: 0.62rem; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.gantt-timeline-header { flex: 1; display: grid; grid-template-columns: repeat(var(--gantt-hours, 11), 1fr); }
+.gantt-hour-cell {
+  padding: 8px 4px;
+  border-right: 1px solid var(--cal-s200);
+  color: var(--cal-s700);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+  user-select: none;
+}
+.gantt-hour-cell .hour-sub { color: var(--cal-s400); font-size: 0.62rem; font-weight: 500; }
+
+.gantt-row { position: relative; display: flex; min-height: 84px; border-bottom: 1px solid var(--cal-s100); }
+.gantt-room-sidebar {
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  padding: 10px 14px;
+  background: #fff;
+  box-shadow: 2px 0 6px -2px rgba(15, 23, 42, 0.05);
+}
+.gantt-room-name { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--cal-s900); font-size: 0.82rem; font-weight: 700; }
+.gantt-room-name span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gantt-room-dot { flex-shrink: 0; width: 10px; height: 10px; border-radius: 3px; }
+.gantt-room-meta { margin-top: 3px; overflow: hidden; color: var(--cal-s500); font-size: 0.68rem; text-overflow: ellipsis; white-space: nowrap; }
+.gantt-empty { padding: 32px 16px; color: var(--cal-s400); font-size: 0.78rem; text-align: center; }
+
+/* 30-min slots: dashed on the half hour, solid on the hour */
+.gantt-timeline-track { position: relative; flex: 1; display: grid; grid-template-columns: repeat(var(--gantt-slots, 22), 1fr); }
+.gantt-slot { border-right: 1px dashed var(--cal-s100); cursor: cell; transition: background-color 0.12s ease; }
+.gantt-slot:nth-child(even) { border-right: 1px solid var(--cal-s200); }
+.gantt-slot.is-booked { cursor: default; }
+.gantt-slot:not(.is-booked):hover { background: #ecfdf5; }
+/* drag-select: sideways drag with mouse/pen; on touch, tap a slot (vertical scroll stays native) */
+.gantt-table { user-select: none; -webkit-user-select: none; }
+.gantt-slot { touch-action: pan-y; }
+.gantt-slot.is-selecting { background: #a7f3d0; }
+
+.gantt-booking-block {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+  padding: 6px 10px;
+  border-left: 3.5px solid rgba(255, 255, 255, 0.65);
+  border-radius: 8px;
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.gantt-booking-block:hover { z-index: 8; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2); }
+.gantt-block-title { overflow: hidden; font-size: 0.78rem; font-weight: 700; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.gantt-block-subtitle { margin-top: 2px; overflow: hidden; font-size: 0.68rem; opacity: 0.92; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Current-time line (today only) */
+.current-time-marker { position: absolute; top: 0; bottom: 0; z-index: 15; width: 2px; background: var(--cal-rose); pointer-events: none; }
+.current-time-marker::before {
+  content: '';
+  position: absolute;
+  top: -3px;
+  left: -4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--cal-rose);
+  box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.2);
+}
+
+@container holcal (max-width: 560px) {
+  .cal-gantt { --gantt-side: 120px; }
+  .gantt-date-banner { padding: 8px 10px; }
+  .gantt-room-corner,
+  .gantt-room-sidebar { padding-left: 10px; padding-right: 8px; }
+}
+
+/* ---------- Room booking: overlapping-dates confirm (showConfirmDialog detailsHtml) ---------- */
+.confirm-conflict-list {
+  max-height: 180px;
+  overflow-y: auto;
+  margin: 10px 0 4px;
+  padding: 8px 10px 8px 26px;
+  border: 1px solid var(--cal-amber-200);
+  border-radius: 8px;
+  background: var(--cal-amber-50);
+  color: var(--cal-amber-900);
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+.confirm-conflict-list li + li { margin-top: 4px; }

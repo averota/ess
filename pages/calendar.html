@@ -56,7 +56,6 @@
       <div class="page-wrap holidays-page">
 
         <div class="panel panel-error hidden" id="holidaysError" role="alert"></div>
-        <div class="panel panel-status hidden" id="holidaysReadOnly">You can view holidays here, but only admins can manage them.</div>
 
         <!-- Primary view: monthly calendar -->
         <div id="calendarView" class="cal-card">
@@ -70,17 +69,21 @@
               <select id="monthSelect" class="form-select form-select-sm" aria-label="Month"></select>
               <select id="yearSelect" class="form-select form-select-sm" aria-label="Year"></select>
             </div>
+            <div class="cal-jump hidden" id="dayPickerWrap">
+              <input type="date" id="dayInput" class="form-control form-control-sm" aria-label="Day">
+            </div>
             <div class="cal-jump hidden" id="roomFilterWrap">
               <select id="roomFilterSelect" class="form-select form-select-sm" aria-label="Filter by room"></select>
             </div>
             <div class="cal-toolbar-views ms-auto">
               <div class="cal-nav cal-mode-toggle" role="group" aria-label="Calendar mode">
-                <button id="modeLeaveBtn" class="cal-nav-btn is-active" type="button" aria-pressed="true"><i class="bi bi-person-walking me-1"></i>Leave</button>
-                <button id="modeRoomBtn" class="cal-nav-btn" type="button" aria-pressed="false"><i class="bi bi-door-open me-1"></i>Rooms</button>
+                <button id="modeLeaveBtn" class="cal-nav-btn is-active" type="button" aria-pressed="true"><i class="bi bi-person-walking"></i><span class="nav-label">Leave</span></button>
+                <button id="modeRoomBtn" class="cal-nav-btn" type="button" aria-pressed="false"><i class="bi bi-door-open"></i><span class="nav-label">Rooms</span></button>
               </div>
               <div class="cal-nav cal-view-toggle" role="group" aria-label="Calendar view">
-                <button id="viewGridBtn" class="cal-nav-btn is-active" type="button" aria-pressed="true"><i class="bi bi-calendar3 me-1"></i>Grid</button>
-                <button id="viewHolidaysBtn" class="cal-nav-btn" type="button" aria-pressed="false"><i class="bi bi-stars me-1"></i>Holidays</button>
+                <button id="viewGridBtn" class="cal-nav-btn is-active" type="button" aria-pressed="true"><i class="bi bi-calendar3"></i><span class="nav-label">Grid</span></button>
+                <button id="viewGanttBtn" class="cal-nav-btn hidden" type="button" aria-pressed="false" title="Daily room timeline"><i class="bi bi-layout-three-columns"></i><span class="nav-label">Gantt</span></button>
+                <button id="viewHolidaysBtn" class="cal-nav-btn" type="button" aria-pressed="false"><i class="bi bi-stars"></i><span class="nav-label">Holidays</span></button>
               </div>
             </div>
           </div>
@@ -90,6 +93,26 @@
           </div>
           <div class="cal-grid" id="calGrid"></div>
           <div class="cal-holidays hidden" id="calHolidays"></div>
+
+          <!-- Gantt day view (Rooms mode): rendered by renderGantt() in calendar.js -->
+          <div class="cal-gantt hidden" id="calGantt">
+            <div class="gantt-date-banner">
+              <div class="gantt-date-title">
+                <span class="gantt-badge"><i class="bi bi-calendar-event"></i>Daily room timeline</span>
+                <span class="gantt-date-label" id="ganttDateLabel"></span>
+              </div>
+              <span class="gantt-hint"><span class="gantt-hint-dot"></span>Free 30-min slot (click to book)</span>
+            </div>
+            <div class="gantt-scroll">
+              <div class="gantt-table">
+                <div class="gantt-header-row">
+                  <div class="gantt-room-corner"><span>Rooms</span><span class="gantt-corner-sub">Capacity</span></div>
+                  <div class="gantt-timeline-header" id="ganttHours"></div>
+                </div>
+                <div id="ganttRows"></div>
+              </div>
+            </div>
+          </div>
 
           <div class="cal-footer">
             <div class="cal-legend-static">

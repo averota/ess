@@ -9,8 +9,10 @@
                    booked_by, booker_name)
 
    Primary view is a monthly calendar (grows with its content, the page
-   scrolls) with two modes — Leave (default) and Rooms — plus a yearly
-   Holidays table. In Rooms mode every cell shows that day's room bookings;
+   scrolls) with two modes — Leave (default) and Rooms — plus, in Rooms
+   mode, a daily Gantt (one row per room, 30-minute slots; clicking a free
+   slot opens the booking form prefilled with room/date/time) and, in Leave
+   mode, a yearly Holidays table (read-only for non-admins). In Rooms mode every cell shows that day's room bookings;
    "+" / "New booking" opens the booking form; owners (and admins) can
    edit/delete a booking, everyone else sees it read-only; admins also get
    "Manage rooms". A booking can carry free-text invitees and can repeat
@@ -168,7 +170,8 @@
   const today = new Date();
   let viewYear = today.getFullYear();
   let viewMonth = today.getMonth(); // 0-11
-  let viewMode = 'grid';            // 'grid' | 'holidays'
+  let viewMode = 'grid';            // 'grid' | 'holidays' (Leave mode only) | 'gantt' (Rooms mode only)
+  let ganttKey = null;              // 'yyyy-mm-dd' shown in the Gantt view
   let mode = 'leave';               // 'leave' | 'room' — what the grid cells show
 
   /* ------------------------------------------------------------------ */
@@ -205,10 +208,11 @@
     panel.classList.remove('hidden');
   }
 
+  // `detailsHtml` (trusted/escaped by the caller) renders under the message.
   // With `choices` ([{ value, label, hint }]) the dialog also shows a radio
   // list and resolves to the selected value (first one preselected);
   // otherwise it resolves true. Dismissing resolves false either way.
-  function showConfirmDialog({ title, message, confirmLabel = 'Confirm', danger = false, choices = null }) {
+  function showConfirmDialog({ title, message, confirmLabel = 'Confirm', cancelLabel = 'Cancel', danger = false, choices = null, detailsHtml = '' }) {
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
@@ -224,9 +228,10 @@
         <div class="modal-box">
           <h3>${escapeHtml(title)}</h3>
           <p>${message}</p>
+          ${detailsHtml}
           ${choicesHtml}
           <div class="modal-actions">
-            <button type="button" class="btn btn-ghost btn-sm" data-action="cancel">Cancel</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-action="cancel">${escapeHtml(cancelLabel)}</button>
             <button type="button" class="btn btn-sm ${danger ? 'btn-rose' : 'btn-accent'}" data-action="confirm">${escapeHtml(confirmLabel)}</button>
           </div>
         </div>`;
@@ -350,7 +355,12 @@
   const refreshBtn = $('#refreshBtn');
   const calWeekdays = $('.cal-weekdays', calCard);
   const calHolidays = $('#calHolidays');
-  const viewBtns = { grid: $('#viewGridBtn'), holidays: $('#viewHolidaysBtn') };
+  const calGantt = $('#calGantt');
+  const ganttHours = $('#ganttHours');
+  const ganttRows = $('#ganttRows');
+  const dayPickerWrap = $('#dayPickerWrap');
+  const dayInput = $('#dayInput');
+  const viewBtns = { grid: $('#viewGridBtn'), gantt: $('#viewGanttBtn'), holidays: $('#viewHolidaysBtn') };
   const modeBtns = { leave: $('#modeLeaveBtn'), room: $('#modeRoomBtn') };
   const roomFilterWrap = $('#roomFilterWrap');
   const roomFilterSelect = $('#roomFilterSelect');
@@ -491,6 +501,7 @@
 
     calGrid.replaceChildren(fragment);
     if (viewMode === 'holidays') renderHolidayList();
+    else if (viewMode === 'gantt') renderGantt();
   }
 
   // One pill descriptor per entry: { color, text, title, more }.
@@ -505,8 +516,11 @@
     };
   }
 
+  // Own bookings read "You" instead of the stored display name.
+  const bookerLabel = (b) => (myUserId && b.bookedBy === myUserId ? 'You' : b.bookerName);
+
   function bookingPill(b) {
-    const title = `${b.start}\u2013${b.end} \u00b7 ${b.roomName} \u2014 ${b.title} (${b.bookerName})`
+    const title = `${b.start}\u2013${b.end} \u00b7 ${b.roomName} \u2014 ${b.title} (${bookerLabel(b)})`
       + (b.recurrenceGroupId ? `\n${recurrenceLabel(b.recurrenceRule)}` : '')
       + (b.invitees ? `\nInvitees: ${b.invitees}` : '');
     return {
@@ -543,21 +557,32 @@
   /* View + mode switching                                                */
   /* ------------------------------------------------------------------ */
   function setViewMode(nextView) {
-    viewMode = nextView === 'holidays' ? 'holidays' : 'grid';
+    // Leave mode offers Grid | Holidays, Rooms mode Grid | Gantt (see setMode()).
+    viewMode = nextView === 'holidays' && mode === 'leave' ? 'holidays'
+      : nextView === 'gantt' && mode === 'room' ? 'gantt' : 'grid';
+    const gantt = viewMode === 'gantt';
+    const yearly = viewMode === 'holidays'; // spans the whole year: arrows step by year
     calGrid.classList.toggle('hidden', viewMode !== 'grid');
     calWeekdays.classList.toggle('hidden', viewMode !== 'grid');
-    calHolidays.classList.toggle('hidden', viewMode !== 'holidays');
-    // Holidays view spans the whole year: hide the month picker, arrows step by year.
-    const yearly = viewMode === 'holidays';
-    monthSelect.classList.toggle('hidden', yearly);
-    prevMonthBtn.setAttribute('aria-label', yearly ? 'Previous year' : 'Previous month');
-    nextMonthBtn.setAttribute('aria-label', yearly ? 'Next year' : 'Next month');
+    calHolidays.classList.toggle('hidden', !yearly);
+    calGantt.classList.toggle('hidden', !gantt);
+    // Gantt shows a single day: swap the month/year pickers for a day picker.
+    dayPickerWrap.classList.toggle('hidden', !gantt);
+    monthSelect.classList.toggle('hidden', yearly || gantt);
+    yearSelect.classList.toggle('hidden', gantt);
+    const unit = yearly ? 'year' : gantt ? 'day' : 'month';
+    prevMonthBtn.setAttribute('aria-label', `Previous ${unit}`);
+    nextMonthBtn.setAttribute('aria-label', `Next ${unit}`);
     todayBtn.textContent = yearly ? 'This year' : 'Today';
     Object.entries(viewBtns).forEach(([name, btn]) => {
       btn.classList.toggle('is-active', name === viewMode);
       btn.setAttribute('aria-pressed', String(name === viewMode));
     });
-    if (viewMode === 'holidays') renderHolidayList();
+    if (yearly) renderHolidayList();
+    if (gantt) {
+      const inView = !!ganttKey && ganttKey.startsWith(`${viewYear}-${pad2(viewMonth + 1)}`);
+      setGanttDate(inView ? ganttKey : defaultGanttKey());
+    }
   }
 
   // Leave | Rooms. Only the grid is mode-aware, so switching mode from the
@@ -569,6 +594,8 @@
       btn.setAttribute('aria-pressed', String(name === mode));
     });
     roomFilterWrap.classList.toggle('hidden', mode !== 'room');
+    viewBtns.gantt.classList.toggle('hidden', mode !== 'room');
+    viewBtns.holidays.classList.toggle('hidden', mode === 'room');
     manageRoomsBtn.classList.toggle('hidden', mode !== 'room' || !isAdmin);
     renderLegend();
     if (viewMode !== 'grid') setViewMode('grid');
@@ -667,6 +694,7 @@
     toast(`Couldn\u2019t load ${mode === 'room' ? 'room booking' : 'leave'} data for this month.`, 'danger');
   }
   function shiftMonth(delta) {
+    if (viewMode === 'gantt') { setGanttDate(toDateKey(addDays(parseDateOnly(ganttKey), delta))); return; }
     if (viewMode === 'holidays') { goToMonth(viewYear + delta, viewMonth); return; }
     let m = viewMonth + delta, y = viewYear;
     if (m < 0) { m = 11; y--; } else if (m > 11) { m = 0; y++; }
@@ -952,7 +980,7 @@
       name: (b.recurrenceGroupId ? '\u21bb ' : '') + b.title,
       tag: b.roomName,
       color: colorForRoom(b.roomId),
-      meta: `${b.start}\u2013${b.end} \u00b7 ${b.bookerName}`
+      meta: `${b.start}\u2013${b.end} \u00b7 ${bookerLabel(b)}`
     }), roomsMap.size ? 'No bookings on this date.' : 'No rooms have been set up yet.', 'New booking');
   }
 
@@ -1056,6 +1084,8 @@
   }
 
   const hhmm = (t) => String(t).slice(0, 5); // 'HH:MM:SS' -> 'HH:MM'
+  const toMinutes = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+  const minToTime = (m) => `${pad2(Math.floor(m / 60))}:${pad2(m % 60)}`;
 
   function rebuildBookingsMap() {
     bookingsMap.clear();
@@ -1099,6 +1129,209 @@
     } finally {
       calGrid.classList.remove('is-loading');
     }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Gantt day view (Rooms mode): one row per active room, 30-min slots   */
+  /*                                                                      */
+  /* Draws bookingsMap for ganttKey (already filtered by the room filter  */
+  /* and loaded for the month containing ganttKey). A free slot opens the */
+  /* booking form prefilled with room + date + start/end; a booking bar   */
+  /* opens it like any other booking (editable for owner/admin, read-only */
+  /* otherwise). Bookings outside the window below are clipped to it.     */
+  /* ------------------------------------------------------------------ */
+  const GANTT_START_HOUR = 7;
+  const GANTT_END_HOUR = 18;
+  const SLOT_MINUTES = 30;
+  const GANTT_START_MIN = GANTT_START_HOUR * 60;
+  const GANTT_TOTAL_MIN = (GANTT_END_HOUR - GANTT_START_HOUR) * 60;
+  const GANTT_SLOTS = GANTT_TOTAL_MIN / SLOT_MINUTES;
+  const ganttPct = (min) => ((min - GANTT_START_MIN) / GANTT_TOTAL_MIN) * 100;
+
+  function div(className, text) {
+    const el = document.createElement('div');
+    el.className = className;
+    if (text !== undefined) el.textContent = text;
+    return el;
+  }
+
+  // Today when it falls in the month being viewed, otherwise the 1st.
+  function defaultGanttKey() {
+    const t = new Date();
+    const inView = t.getFullYear() === viewYear && t.getMonth() === viewMonth;
+    return dateKey(viewYear, viewMonth, inView ? t.getDate() : 1);
+  }
+
+  // Bookings are fetched per month, so only reload when the day crosses one.
+  function setGanttDate(key) {
+    ganttKey = key;
+    const [y, m] = key.split('-').map(Number);
+    const monthChanged = y !== viewYear || m - 1 !== viewMonth;
+    viewYear = y;
+    viewMonth = m - 1;
+    renderGantt();
+    if (monthChanged) loadDataForView().catch(reportLoadError);
+  }
+
+  function renderGantt() {
+    if (viewMode !== 'gantt' || !ganttKey) return;
+    $('#ganttDateLabel').textContent = formatDateLong(ganttKey);
+    dayInput.value = ganttKey;
+    calGantt.style.setProperty('--gantt-hours', String(GANTT_END_HOUR - GANTT_START_HOUR));
+    calGantt.style.setProperty('--gantt-slots', String(GANTT_SLOTS));
+
+    const hourCells = [];
+    for (let h = GANTT_START_HOUR; h < GANTT_END_HOUR; h++) {
+      const cell = div('gantt-hour-cell', `${pad2(h)}:00`);
+      cell.appendChild(div('hour-sub', h < 12 ? 'AM' : 'PM'));
+      hourCells.push(cell);
+    }
+    ganttHours.replaceChildren(...hourCells);
+
+    const visibleRooms = Array.from(roomsMap.values())
+      .filter((r) => r.is_active && (!roomFilter || String(r.id) === roomFilter));
+    if (!visibleRooms.length) {
+      ganttRows.replaceChildren(div('gantt-empty', roomsMap.size ? 'No rooms match the filter.' : 'No rooms have been set up yet.'));
+      return;
+    }
+
+    const dayBookings = bookingsMap.get(ganttKey) || [];
+    const now = new Date();
+    const nowMin = ganttKey === toDateKey(now) ? now.getHours() * 60 + now.getMinutes() : null;
+    ganttRows.replaceChildren(...visibleRooms.map((room) =>
+      buildGanttRow(room, dayBookings.filter((b) => b.roomId === room.id), nowMin)));
+  }
+
+  function buildGanttRow(room, bookings, nowMin) {
+    const row = div('gantt-row');
+    const color = colorForRoom(room.id);
+
+    const side = div('gantt-room-sidebar');
+    const name = div('gantt-room-name');
+    const dot = document.createElement('span');
+    dot.className = 'gantt-room-dot';
+    dot.style.background = color;
+    const label = document.createElement('span');
+    label.textContent = room.name;
+    name.append(dot, label);
+    side.append(name, div('gantt-room-meta',
+      [room.capacity ? `${room.capacity} seats` : '', room.location].filter(Boolean).join(' \u00b7 ')));
+
+    const track = div('gantt-timeline-track');
+    const ranges = bookings.map((b) => [toMinutes(b.start), toMinutes(b.end)]);
+    for (let i = 0; i < GANTT_SLOTS; i++) {
+      const start = GANTT_START_MIN + i * SLOT_MINUTES;
+      const end = start + SLOT_MINUTES;
+      const slot = div('gantt-slot');
+      slot.dataset.idx = String(i);
+      if (ranges.some(([a, b]) => a < end && start < b)) {
+        slot.classList.add('is-booked');
+      } else {
+        slot.dataset.roomId = room.id;
+        slot.dataset.start = minToTime(start);
+        slot.title = `Book ${room.name}, ${minToTime(start)}\u2013${minToTime(end)}`;
+      }
+      track.appendChild(slot);
+    }
+
+    bookings.forEach((b) => {
+      const from = Math.max(toMinutes(b.start), GANTT_START_MIN);
+      const to = Math.min(toMinutes(b.end), GANTT_START_MIN + GANTT_TOTAL_MIN);
+      if (to <= from) return; // entirely outside the window
+      const block = div('gantt-booking-block');
+      block.style.left = `${ganttPct(from)}%`;
+      block.style.width = `${ganttPct(to) - ganttPct(from)}%`;
+      block.style.backgroundColor = color;
+      block.dataset.bookingId = b.id;
+      block.title = bookingPill(b).title;
+      const sub = div('gantt-block-subtitle', `${b.start}\u2013${b.end} \u00b7 ${bookerLabel(b)}`);
+      block.append(div('gantt-block-title', `${b.recurrenceGroupId ? '\u21bb ' : ''}${b.title}`), sub);
+      track.appendChild(block);
+    });
+
+    if (nowMin !== null && nowMin >= GANTT_START_MIN && nowMin <= GANTT_START_MIN + GANTT_TOTAL_MIN) {
+      const marker = div('current-time-marker');
+      marker.style.left = `${ganttPct(nowMin)}%`;
+      track.appendChild(marker);
+    }
+
+    row.append(side, track);
+    return row;
+  }
+
+  // Booking bars open their booking (delegated click; rows are rebuilt on each render).
+  function onGanttClick(e) {
+    const block = e.target.closest('.gantt-booking-block');
+    if (!block) return;
+    const entry = (bookingsMap.get(ganttKey) || []).find((b) => String(b.id) === block.dataset.bookingId);
+    if (entry) openBookingModal(entry);
+  }
+
+  // Free slots: press, drag sideways, release. One slot (a plain click) books
+  // 30 min; a drag books from the first to the last slot covered. The drag
+  // can't pass over a booking — it stops at the last free slot before it —
+  // so a selection is always one free, overlap-free range in one room.
+  let ganttDrag = null; // { track, roomId, anchor, lo, hi }
+
+  const slotAt = (track, clientX) => {
+    const r = track.getBoundingClientRect();
+    const i = Math.floor(((clientX - r.left) / r.width) * GANTT_SLOTS);
+    return Math.min(Math.max(i, 0), GANTT_SLOTS - 1);
+  };
+  const slotFree = (track, i) => !track.children[i].classList.contains('is-booked');
+
+  function paintGanttSelection() {
+    const { track, lo, hi } = ganttDrag;
+    for (let i = 0; i < GANTT_SLOTS; i++) track.children[i].classList.toggle('is-selecting', i >= lo && i <= hi);
+  }
+
+  function onGanttPointerDown(e) {
+    const slot = e.target.closest('.gantt-slot');
+    if (!slot || !slot.dataset.start || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    const anchor = Number(slot.dataset.idx);
+    ganttDrag = { track: slot.parentElement, roomId: slot.dataset.roomId, anchor, lo: anchor, hi: anchor };
+    paintGanttSelection();
+    document.addEventListener('pointermove', onGanttPointerMove);
+    document.addEventListener('pointerup', onGanttPointerUp);
+    document.addEventListener('pointercancel', endGanttDrag);
+  }
+
+  function onGanttPointerMove(e) {
+    if (!ganttDrag) return;
+    const { track, anchor } = ganttDrag;
+    const target = slotAt(track, e.clientX);
+    let lo = anchor;
+    let hi = anchor;
+    // grow toward the pointer, one free slot at a time
+    for (let i = anchor + 1; i <= target && slotFree(track, i); i++) hi = i;
+    for (let i = anchor - 1; i >= target && slotFree(track, i); i--) lo = i;
+    if (lo !== ganttDrag.lo || hi !== ganttDrag.hi) {
+      ganttDrag.lo = lo;
+      ganttDrag.hi = hi;
+      paintGanttSelection();
+    }
+  }
+
+  function endGanttDrag() {
+    if (ganttDrag) {
+      const { track } = ganttDrag;
+      for (let i = 0; i < GANTT_SLOTS; i++) track.children[i].classList.remove('is-selecting');
+    }
+    ganttDrag = null;
+    document.removeEventListener('pointermove', onGanttPointerMove);
+    document.removeEventListener('pointerup', onGanttPointerUp);
+    document.removeEventListener('pointercancel', endGanttDrag);
+  }
+
+  function onGanttPointerUp() {
+    const sel = ganttDrag;
+    endGanttDrag();
+    if (!sel) return;
+    openBookingModal(null, ganttKey, {
+      roomId: sel.roomId,
+      start: minToTime(GANTT_START_MIN + sel.lo * SLOT_MINUTES),
+      end: minToTime(GANTT_START_MIN + (sel.hi + 1) * SLOT_MINUTES)
+    });
   }
 
   /* ------------------------------------------------------------------ */
@@ -1309,8 +1542,7 @@
     const end = $('#bookingEndInput').value;
     chip.classList.remove('is-invalid');
     if (!start || !end) { chip.classList.add('hidden'); return; }
-    const toMin = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
-    const diff = toMin(end) - toMin(start);
+    const diff = toMinutes(end) - toMinutes(start);
     chip.classList.remove('hidden');
     if (diff > 0) {
       const h = Math.floor(diff / 60);
@@ -1423,10 +1655,13 @@
     return { start: `${pad2(h)}:00`, end: `${pad2(h + 1)}:00` };
   }
 
+  // "Thursday, 1 Oct 2026, 09:00\u201310:00 \u2014 clashes with \u201cTitle\u201d (09:30\u201311:00)" (escaped HTML)
+  const conflictLine = (c) =>
+    `${escapeHtml(formatDateLong(c.occ.date))}, ${c.occ.start}\u2013${c.occ.end} \u2014 clashes with \u201c${escapeHtml(c.existing.title)}\u201d (${hhmm(c.existing.start_time)}\u2013${hhmm(c.existing.end_time)})`;
+
   function showBookingConflicts(conflicts) {
     const box = $('#bookingConflictAlert');
-    const items = conflicts.slice(0, 8).map((c) =>
-      `<li>${escapeHtml(formatDateLong(c.occ.date))}, ${c.occ.start}\u2013${c.occ.end} \u2014 clashes with \u201c${escapeHtml(c.existing.title)}\u201d (${hhmm(c.existing.start_time)}\u2013${hhmm(c.existing.end_time)})</li>`);
+    const items = conflicts.slice(0, 8).map((c) => `<li>${conflictLine(c)}</li>`);
     if (conflicts.length > 8) items.push(`<li>\u2026and ${conflicts.length - 8} more</li>`);
     $('#bookingConflictBody').innerHTML = `<strong>This room is already booked at that time.</strong><ul>${items.join('')}</ul>`;
     box.classList.remove('hidden');
@@ -1462,8 +1697,9 @@
   }
 
   // entry = existing bookingsMap entry (edit / read-only view) or null (new,
-  // prefilled with prefillDate).
-  function openBookingModal(entry, prefillDate) {
+  // prefilled with prefillDate). prefill = optional { roomId, start, end }
+  // for a new booking (the Gantt view's clicked slot).
+  function openBookingModal(entry, prefillDate, prefill) {
     const rooms = Array.from(roomsMap.values())
       .filter((r) => r.is_active || (entry && r.id === entry.roomId));
     if (!rooms.length) {
@@ -1486,10 +1722,10 @@
       opt.textContent = r.is_active ? label : `${label} (inactive)`;
       sel.appendChild(opt);
     });
-    const wantedRoom = entry ? String(entry.roomId) : roomFilter;
+    const wantedRoom = entry ? String(entry.roomId) : String(prefill?.roomId ?? roomFilter);
     sel.value = $$('option', sel).some((o) => o.value === wantedRoom) ? wantedRoom : sel.options[0].value;
 
-    const suggested = suggestedTimes(prefillDate || '');
+    const suggested = prefill?.start ? prefill : suggestedTimes(prefillDate || '');
     $('#bookingDateInput').value = entry ? entry.date : (prefillDate || '');
     $('#bookingDateToInput').value = $('#bookingDateInput').value;
     $('#bookingDateToInput').min = $('#bookingDateInput').value;
@@ -1525,7 +1761,7 @@
 
     const owner = $('#bookingOwnerLine');
     owner.classList.toggle('hidden', !entry);
-    if (entry) $('#bookingOwnerText').textContent = `Booked by ${entry.bookerName}${entry.bookedBy === myUserId ? ' (you)' : ''}`;
+    if (entry) $('#bookingOwnerText').textContent = `Booked by ${bookerLabel(entry).replace(/^You$/, 'you')}`;
 
     BOOKING_FIELDS.forEach((f) => { $(f).disabled = !editable; });
     $('#bookingSubmitBtn').classList.toggle('hidden', !editable);
@@ -1641,7 +1877,25 @@
       }
     }
 
-    const conflicts = await findBookingConflicts(base.room_id, occs, null);
+    let conflicts = await findBookingConflicts(base.room_id, occs, null);
+    let skipped = 0;
+    if (conflicts.length && occs.length > 1 && conflicts.length < occs.length) {
+      // A series with some clashing dates: offer to skip just those and book the rest.
+      const room = roomsMap.get(base.room_id);
+      const keep = occs.length - conflicts.length;
+      const skip = await showConfirmDialog({
+        title: 'Some dates overlap',
+        message: `${conflicts.length} of ${occs.length} dates ${conflicts.length === 1 ? 'is' : 'are'} already booked in ${escapeHtml(room ? room.name : 'this room')}. Skip ${conflicts.length === 1 ? 'that date' : 'those dates'} and book the other ${keep}?`,
+        detailsHtml: `<ul class="confirm-conflict-list">${conflicts.map((c) => `<li>${conflictLine(c)}</li>`).join('')}</ul>`,
+        confirmLabel: 'Yes, skip & book rest',
+        cancelLabel: 'No'
+      });
+      if (!skip) { showBookingConflicts(conflicts); return; }
+      const clash = new Set(conflicts.map((c) => c.occ.date));
+      occs = occs.filter((o) => !clash.has(o.date));
+      skipped = conflicts.length;
+      conflicts = [];
+    }
     if (conflicts.length) { showBookingConflicts(conflicts); return; }
 
     const groupId = occs.length > 1 ? crypto.randomUUID() : null;
@@ -1665,6 +1919,7 @@
     }
     const trimmedCount = occs.filter((o) => o.trimmed).length;
     let message = rows.length > 1 ? `Booked ${rows.length} occurrences.` : 'Room booked.';
+    if (skipped) message += ` Skipped ${skipped} overlapping ${skipped === 1 ? 'date' : 'dates'}.`;
     if (trimmedCount) {
       message += ` ${trimmedCount} on half ${trimmedCount === 1 ? 'day was' : 'days were'} shortened to end at ${HALF_DAY_END}.`;
     }
@@ -2218,7 +2473,6 @@
   /* ------------------------------------------------------------------ */
   function applyReadOnly() {
     $('.holidays-page').classList.add('is-readonly');
-    $('#holidaysReadOnly').classList.remove('hidden');
     $('#addHolidayDropdownBtn').closest('.dropdown').classList.add('hidden');
     dangerZone.classList.add('hidden');
     renderCalendar();
@@ -2317,11 +2571,17 @@
 
     prevMonthBtn.addEventListener('click', () => shiftMonth(-1));
     nextMonthBtn.addEventListener('click', () => shiftMonth(1));
-    todayBtn.addEventListener('click', () => goToMonth(today.getFullYear(), today.getMonth()));
+    todayBtn.addEventListener('click', () => (viewMode === 'gantt'
+      ? setGanttDate(toDateKey(new Date()))
+      : goToMonth(today.getFullYear(), today.getMonth())));
     monthSelect.addEventListener('change', () => goToMonth(viewYear, Number(monthSelect.value)));
     yearSelect.addEventListener('change', () => goToMonth(Number(yearSelect.value), viewMonth));
     refreshBtn.addEventListener('click', () => { showError(null); run(); });
     viewBtns.grid.addEventListener('click', () => setViewMode('grid'));
+    viewBtns.gantt.addEventListener('click', () => setViewMode('gantt'));
+    dayInput.addEventListener('change', () => { if (dayInput.value) setGanttDate(dayInput.value); });
+    ganttRows.addEventListener('click', onGanttClick);
+    ganttRows.addEventListener('pointerdown', onGanttPointerDown);
     viewBtns.holidays.addEventListener('click', () => setViewMode('holidays'));
 
     $('#downloadTemplateBtn').addEventListener('click', downloadHolidayTemplate);

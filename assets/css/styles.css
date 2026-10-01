@@ -150,7 +150,7 @@ a:hover { color: var(--accent-dark); }
   z-index: 1020;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
-  padding: 0 24px;
+  padding: 0 20px;
   min-height: 64px;
   display: flex;
   align-items: center;
@@ -584,7 +584,7 @@ html.sidebar-open-init .app-shell {
 .page-wrap {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 24px;
+  padding: 20px;
 }
 
 .hidden { display: none !important; }
