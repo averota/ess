@@ -14,7 +14,10 @@
                      --cal-row-min tall and grows with its content
    .cal-day          date cell; .is-other-month / .is-today / .is-clickable
    .cal-holiday-pill the (single) holiday on a day
-   .cal-leave-pill   one leave entry; tint comes from --leave-color (JS)
+   .cal-leave-pill   one leave entry; tint comes from --leave-color (JS).
+                     Room mode reuses it (and .cal-leave-list/.cal-leave-more)
+                     for booking pills, with --leave-color = the room's colour.
+   .cal-toolbar-views mode toggle (Leave | Rooms) + view toggle (Grid | Holidays)
    .cal-footer       static legend (holiday/today) + #calLegend (leave types)
    ===================================================================== */
 
@@ -259,7 +262,6 @@
   --_c: var(--leave-color, var(--cal-brand));
   display: block;
   padding: 2px 6px;
-  border-left: 3px solid var(--_c);
   border-radius: 5px;
   background: var(--_c);
   color: #fff;
@@ -373,7 +375,8 @@ body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
 
 /* ---------- Holiday + day-leave modals ---------- */
 #holidayModal .modal-content,
-#dayLeaveModal .modal-content {
+#dayLeaveModal .modal-content,
+#roomsModal .modal-content {
   border: 0;
   border-radius: var(--cal-radius);
   box-shadow: 0 25px 60px rgba(15, 23, 42, 0.25);
@@ -381,17 +384,22 @@ body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
 }
 #holidayModal .modal-header,
 #dayLeaveModal .modal-header,
+#roomsModal .modal-header,
 #holidayModal .modal-footer,
-#dayLeaveModal .modal-footer { border-color: var(--cal-s100); padding: 14px 20px; }
+#dayLeaveModal .modal-footer,
+#roomsModal .modal-footer { border-color: var(--cal-s100); padding: 14px 20px; }
 #holidayModal .modal-title,
-#dayLeaveModal .modal-title {
+#dayLeaveModal .modal-title,
+#roomsModal .modal-title {
   font-size: 1rem;
   font-weight: 800;
   letter-spacing: -0.01em;
   color: var(--cal-s900);
 }
-#holidayModal .modal-body { padding: 20px; }
-#holidayModal .form-label {
+#holidayModal .modal-body,
+#roomsModal .modal-body { padding: 20px; }
+#holidayModal .form-label,
+#roomsModal .form-label {
   margin-bottom: 4px;
   color: var(--cal-s500);
   font-size: 0.72rem;
@@ -399,12 +407,14 @@ body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
-#holidayModal .form-control {
+#holidayModal .form-control,
+#roomsModal .form-control {
   border-color: var(--cal-s200);
   border-radius: 0.38rem;
-  background: var(--cal-s50);
+  background-color: var(--cal-s50);
 }
-#holidayModal .form-control:focus {
+#holidayModal .form-control:focus,
+#roomsModal .form-control:focus {
   border-color: var(--cal-brand);
   background: #fff;
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.18);
@@ -473,7 +483,7 @@ body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
   .cal-day-num { font-size: 0.64rem; }
   .cal-day.is-today .cal-day-num { width: 18px; height: 18px; margin: -1px 0 0 -1px; }
   .cal-holiday-pill { font-size: 0.56rem; padding: 1px 4px; }
-  .cal-leave-pill { font-size: 0.54rem; padding: 1px 4px; border-left-width: 2px; }
+  .cal-leave-pill { font-size: 0.54rem; padding: 1px 4px; }
   .cal-leave-more { font-size: 0.56rem; }
   .cal-day-add { width: 14px; height: 14px; top: 2px; right: 2px; }
   .cal-day-add svg { width: 9px; height: 9px; }
@@ -482,108 +492,21 @@ body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
   .cal-legend-item { font-size: 0.66rem; }
 }
 
-/* ---------- Grid / List view toggle ---------- */
+/* ---------- Grid / Holidays view toggle ---------- */
 .cal-nav-btn.is-active {
   background: #fff;
   color: var(--cal-s900);   /* = employees .view-switcher-btn.is-active */
   box-shadow: var(--cal-shadow);
 }
 
-/* ---------- List (agenda) view — see renderList() in calendar.js ----------
-   Row = date block | stack of items. Each item is one line:
-   dot + PRIMARY (name / holiday) ........ secondary (type · duration / remark) */
-.cal-list,
+/* ---------- Holidays (year) view container ---------- */
 .cal-holidays {
   flex: 1 1 auto;
   transition: opacity 0.15s ease;
 }
-.cal-list.is-loading,
 .cal-holidays.is-loading { opacity: 0.55; pointer-events: none; }
 
-.cal-list-row {
-  position: relative;
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 5px 14px;
-  border-bottom: 1px solid var(--cal-s100);
-  transition: background 0.12s;
-}
-.cal-list-row:last-child { border-bottom: 0; }
-.cal-list-row:hover { background: var(--cal-s50); }
-.cal-list-row.is-today { background: rgba(238, 242, 255, 0.55); box-shadow: inset 3px 0 0 var(--cal-brand); }
-
-.cal-list-date {
-  flex: 0 0 34px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding-top: 2px;
-  line-height: 1.1;
-}
-.cal-list-daynum { font-size: 0.95rem; font-weight: 800; color: var(--cal-s900); }
-.cal-list-dow {
-  font-size: 0.58rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--cal-s400);
-}
-.cal-list-row.is-today .cal-list-daynum { color: var(--cal-brand); }
-
-.cal-list-items { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
-
-.cal-list-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-width: 0;
-  padding: 3px 6px;
-  margin: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-.cal-list-item:hover:not(:disabled) { background: var(--cal-brand-soft); }
-.cal-list-item:disabled { cursor: default; }
-.cal-list-dot {
-  flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--dot, var(--cal-brand));
-}
-.cal-list-primary {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--cal-s900);
-  font-size: 0.74rem;
-  font-weight: 700;
-}
-.cal-list-secondary {
-  flex: 1 1 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--cal-s500);
-  font-size: 0.66rem;
-  font-weight: 500;
-}
-.cal-list-secondary::before { content: "\00b7"; margin-right: 8px; color: var(--cal-s400); }
-
-.cal-list-add { position: static; opacity: 0; flex-shrink: 0; margin-top: 3px; width: 18px; height: 18px; }
-.cal-list-row:hover .cal-list-add,
-.cal-list-add:focus-visible { opacity: 1; }
-@media (hover: none) { .cal-list-add { opacity: 1; } }
-
+/* Empty-state line (Holidays view) */
 .cal-list-empty {
   padding: 32px 16px;
   text-align: center;
@@ -591,7 +514,7 @@ body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
   font-size: 0.78rem;
 }
 
-/* ---------- Holidays (year) view — see renderHolidayList() in calendar.js ---------- */
+/* ---------- Holidays (year) view rows — see renderHolidayList() in calendar.js ---------- */
 .cal-hol-head {
   display: flex;
   align-items: center;
@@ -637,3 +560,377 @@ body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
   .cal-hol-head { padding: 10px; }
   .cal-hol-table th, .cal-hol-table td { padding: 5px 8px; font-size: 0.68rem; }
 }
+
+/* ---------- Mode + view toggles (toolbar, right side) ---------- */
+.cal-toolbar-views {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.cal-jump#roomFilterWrap .form-select { min-width: 150px; max-width: 220px; }
+
+/* ---------- Room booking modal (compact, sectioned redesign) ----------
+   Everything is scoped to #roomBookingModal. The design tokens below are
+   local to the modal so they never leak into the rest of the page. */
+#roomBookingModal {
+  --app-font: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --border-color: #e2e8f0;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --primary-subtle: #eff6ff;
+  --primary-border: #bfdbfe;
+  --rose-500: #e11d48;
+  --rose-subtle: #fff1f2;
+  --rose-border: #fecdd3;
+  --rose-text: #9f1239;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-modal: 0 20px 25px -5px rgba(15, 23, 42, 0.12), 0 8px 10px -6px rgba(15, 23, 42, 0.05);
+}
+/* Vertical (portrait) layout: narrow dialog, fields stacked, paired fields in two columns. */
+#roomBookingModal .modal-dialog { max-width: 440px; }
+#roomBookingModal .modal-content {
+  background: #fff;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+  overflow: hidden;
+  font-family: var(--app-font);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--text-main);
+}
+#roomBookingModal .hidden { display: none !important; }
+/* form sits between .modal-content and the body: keep the flex chain so the body scrolls */
+#roomBookingModal #roomBookingForm {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Header */
+#roomBookingModal .modal-header-booking {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem 0.65rem;
+  border-bottom: 1px solid var(--border-color);
+  background: #fff;
+}
+#roomBookingModal .modal-title-booking {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+#roomBookingModal .modal-title-booking i { color: var(--primary); font-size: 1.05rem; }
+#roomBookingModal .btn-close-sm { background-size: 0.7rem; padding: 0.4rem; opacity: 0.6; transition: opacity 0.15s ease; }
+#roomBookingModal .btn-close-sm:hover { opacity: 1; }
+
+/* Body */
+#roomBookingModal .modal-body-booking {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.75rem 1rem;
+}
+
+/* Context / conflict / series notices */
+#roomBookingModal .booking-owner {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0 0 0.15rem;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #334155;
+  background: #f8fafc;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+#roomBookingModal .booking-conflict {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--rose-text);
+  background: var(--rose-subtle);
+  border: 1px solid var(--rose-border);
+  border-radius: var(--radius-sm);
+}
+#roomBookingModal .booking-conflict i { flex-shrink: 0; margin-top: 0.05rem; font-size: 0.85rem; color: var(--rose-500); }
+#roomBookingModal .booking-conflict ul { margin: 4px 0 0; padding-left: 16px; font-weight: 500; }
+#roomBookingModal .booking-note {
+  margin: 0 0 0.15rem;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.68rem;
+  line-height: 1.3;
+  color: var(--text-muted);
+  background: #f1f5f9;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+/* Room & schedule card */
+#roomBookingModal .booking-section-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.55rem 0.7rem;
+  background: #f8fafc;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+/* Paired fields (From | To, Start | End, Repeats | Repeat until): always two equal columns. */
+#roomBookingModal .booking-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+#roomBookingModal .booking-grid > * { min-width: 0; align-self: start; }
+#roomBookingModal .booking-grid + .booking-grid { margin-top: 0.1rem; }
+#roomBookingModal .booking-grid .form-label-compact { height: 20px; }
+#roomBookingModal .booking-grid .booking-label-row .form-label-compact { height: auto; }
+/* Editing one occurrence: To is hidden, so Date takes the full row. */
+#roomBookingModal .booking-grid-dates:has(#bookingDateToWrap.hidden) { grid-template-columns: minmax(0, 1fr); }
+#roomBookingModal .booking-grid-repeat + .recurrence-box { margin-top: 0.5rem; }
+/* Label + control on one line (Invitees switch). */
+#roomBookingModal .booking-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  height: 20px;
+  margin-bottom: 0.2rem;
+}
+#roomBookingModal .booking-label-row .form-label-compact { margin: 0; height: auto; }
+#roomBookingModal .booking-range-hint { margin: 0; }
+
+/* Labels + inputs */
+#roomBookingModal .form-label-compact {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0 0 0.2rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+#roomBookingModal .form-label-compact.mb-0 { margin-bottom: 0; }
+#roomBookingModal .form-control-compact,
+#roomBookingModal .form-select-compact {
+  height: 32px;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: #1e293b;
+  background-color: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: var(--radius-sm);
+  transition: all 0.15s ease;
+}
+#roomBookingModal .form-select-compact { padding-right: 2rem; text-overflow: ellipsis; }
+#roomBookingModal input[type="date"].form-control-compact,
+#roomBookingModal input[type="time"].form-control-compact { min-width: 0; width: 100%; padding-right: 0.35rem; }
+#roomBookingModal .form-control-compact:focus,
+#roomBookingModal .form-select-compact:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2.5px rgba(37, 99, 235, 0.14);
+  outline: none;
+}
+#roomBookingModal .form-control-compact:disabled,
+#roomBookingModal .form-select-compact:disabled {
+  color: #475569;
+  background-color: #f1f5f9;
+  cursor: not-allowed;
+}
+#roomBookingModal textarea.form-control-compact { height: auto; min-height: 48px; resize: none; }
+
+/* Duration chip */
+#roomBookingModal .duration-indicator-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex-shrink: 0;
+  line-height: 1.2;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--primary);
+  background: var(--primary-subtle);
+  border: 1px solid var(--primary-border);
+  border-radius: 9999px;
+}
+#roomBookingModal .duration-indicator-chip.is-invalid { color: var(--rose-text); background: var(--rose-subtle); border-color: var(--rose-border); }
+
+/* Invitees on/off switch */
+#roomBookingModal .booking-switch { margin: 0; padding: 0; min-height: 0; }
+#roomBookingModal .booking-switch .form-check-input {
+  float: none;
+  margin: 0;
+  width: 2rem;
+  height: 1.05rem;
+  cursor: pointer;
+}
+#roomBookingModal .booking-switch .form-check-input:checked { background-color: var(--primary); border-color: var(--primary); }
+#roomBookingModal .booking-switch .form-check-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2.5px rgba(37, 99, 235, 0.14); }
+#roomBookingModal #bookingInviteesBody .invitee-preview { margin-top: 0.35rem; }
+
+/* Invitee chips */
+#roomBookingModal .invitee-preview { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.25rem; }
+#roomBookingModal .invitee-preview:empty { display: none; }
+#roomBookingModal .invitee-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.08rem 0.45rem;
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 9999px;
+}
+
+/* Recurrence box */
+#roomBookingModal .recurrence-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-top: 0.35rem;
+  padding: 0.5rem 0.65rem;
+  background: #fff;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+#roomBookingModal .form-check-compact { margin-bottom: 0.2rem; padding-left: 1.35rem; min-height: 0; }
+#roomBookingModal .form-check-compact .form-check-input { width: 0.88rem; height: 0.88rem; margin-left: -1.35rem; cursor: pointer; }
+#roomBookingModal .form-check-compact .form-check-label { font-size: 0.72rem; font-weight: 500; color: #334155; cursor: pointer; }
+#roomBookingModal .btn-group-direction .btn-outline-secondary {
+  padding: 0.22rem 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #475569;
+  border-color: #cbd5e1;
+  border-radius: 0;
+}
+#roomBookingModal .btn-group-direction .btn-check:first-child + .btn-outline-secondary { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+#roomBookingModal .btn-group-direction .btn-outline-secondary:last-of-type { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+#roomBookingModal .btn-group-direction .btn-check:checked + .btn-outline-secondary {
+  color: #fff;
+  background-color: var(--primary);
+  border-color: var(--primary);
+}
+
+/* Footer */
+#roomBookingModal .modal-footer-booking {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  padding: 0.55rem 1rem;
+  background: #f8fafc;
+  border-top: 1px solid var(--border-color);
+}
+#roomBookingModal .btn-accent {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.28rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: #fff;
+  background-color: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.2);
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+#roomBookingModal .btn-accent:hover { color: #fff; background-color: var(--primary-hover); border-color: var(--primary-hover); }
+#roomBookingModal .btn-ghost {
+  padding: 0.28rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #475569;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  transition: all 0.15s ease;
+}
+#roomBookingModal .btn-ghost:hover { color: var(--text-main); background: #f1f5f9; border-color: #cbd5e1; }
+#roomBookingModal .btn-rose {
+  padding: 0.28rem 0.65rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--rose-500);
+  background: transparent;
+  border: 1px solid var(--rose-border);
+  border-radius: var(--radius-sm);
+  transition: all 0.15s ease;
+}
+#roomBookingModal .btn-rose:hover { color: var(--rose-text); background: var(--rose-subtle); border-color: #fca5a5; }
+
+/* ---------- Manage rooms modal ---------- */
+#roomsModal .modal-body { max-height: 70vh; overflow-y: auto; }
+.rooms-list { margin-bottom: 18px; border: 1px solid var(--cal-s200); border-radius: 8px; overflow: hidden; }
+.rooms-list:empty { display: none; }
+.rooms-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #fff;
+}
+.rooms-row + .rooms-row { border-top: 1px solid var(--cal-s100); }
+.rooms-row.is-inactive .rooms-name { color: var(--cal-s400); text-decoration: line-through; }
+.rooms-swatch { flex-shrink: 0; width: 10px; height: 10px; border-radius: 3px; }
+.rooms-info { flex: 1 1 auto; min-width: 0; }
+.rooms-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cal-s900); font-size: 0.82rem; font-weight: 700; }
+.rooms-meta { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cal-s500); font-size: 0.68rem; }
+.rooms-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.room-form-title { margin: 0 0 10px; color: var(--cal-s900); font-size: 0.82rem; font-weight: 800; }
+
+@container holcal (max-width: 560px) {
+  .cal-toolbar-views { width: 100%; justify-content: space-between; }
+}
+
+/* ---------- Room booking: delete scope ---------- */
+/* showConfirmDialog({ choices }) — radio list, e.g. delete one / following / series */
+.confirm-choice-group { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 4px; }
+.confirm-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--cal-s200);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.confirm-choice:hover { background: var(--cal-s50); }
+.confirm-choice:has(input:checked) { border-color: var(--cal-brand); background: var(--cal-brand-soft); }
+.confirm-choice input { margin-top: 3px; accent-color: var(--cal-brand); }
+.confirm-choice-title { display: block; color: var(--cal-s900); font-size: 0.82rem; font-weight: 700; }
+.confirm-choice-hint { display: block; color: var(--cal-s500); font-size: 0.72rem; }

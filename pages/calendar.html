@@ -35,6 +35,9 @@
           <button id="refreshBtn" class="btn btn-ghost btn-sm d-inline-flex align-items-center gap-1" type="button" title="Refresh">
             <i class="bi bi-arrow-clockwise"></i><span class="d-none d-sm-inline">Refresh</span>
           </button>
+          <button id="manageRoomsBtn" class="btn btn-ghost btn-sm hidden" type="button">
+            <i class="bi bi-door-open me-1"></i><span class="d-none d-sm-inline">Manage rooms</span>
+          </button>
           <div class="dropdown">
             <button class="btn btn-accent btn-sm d-inline-flex align-items-center gap-1 dropdown-toggle" type="button" id="addHolidayDropdownBtn" data-bs-toggle="dropdown" aria-expanded="false">
               <i class="bi bi-plus-lg"></i>Add holiday
@@ -67,10 +70,18 @@
               <select id="monthSelect" class="form-select form-select-sm" aria-label="Month"></select>
               <select id="yearSelect" class="form-select form-select-sm" aria-label="Year"></select>
             </div>
-            <div class="cal-nav cal-view-toggle ms-auto" role="group" aria-label="Calendar view">
-              <button id="viewGridBtn" class="cal-nav-btn is-active" type="button" aria-pressed="true"><i class="bi bi-calendar3 me-1"></i>Grid</button>
-              <button id="viewListBtn" class="cal-nav-btn" type="button" aria-pressed="false"><i class="bi bi-list-ul me-1"></i>List</button>
-              <button id="viewHolidaysBtn" class="cal-nav-btn" type="button" aria-pressed="false"><i class="bi bi-stars me-1"></i>Holidays</button>
+            <div class="cal-jump hidden" id="roomFilterWrap">
+              <select id="roomFilterSelect" class="form-select form-select-sm" aria-label="Filter by room"></select>
+            </div>
+            <div class="cal-toolbar-views ms-auto">
+              <div class="cal-nav cal-mode-toggle" role="group" aria-label="Calendar mode">
+                <button id="modeLeaveBtn" class="cal-nav-btn is-active" type="button" aria-pressed="true"><i class="bi bi-person-walking me-1"></i>Leave</button>
+                <button id="modeRoomBtn" class="cal-nav-btn" type="button" aria-pressed="false"><i class="bi bi-door-open me-1"></i>Rooms</button>
+              </div>
+              <div class="cal-nav cal-view-toggle" role="group" aria-label="Calendar view">
+                <button id="viewGridBtn" class="cal-nav-btn is-active" type="button" aria-pressed="true"><i class="bi bi-calendar3 me-1"></i>Grid</button>
+                <button id="viewHolidaysBtn" class="cal-nav-btn" type="button" aria-pressed="false"><i class="bi bi-stars me-1"></i>Holidays</button>
+              </div>
             </div>
           </div>
 
@@ -78,7 +89,6 @@
             <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
           </div>
           <div class="cal-grid" id="calGrid"></div>
-          <div class="cal-list hidden" id="calList"></div>
           <div class="cal-holidays hidden" id="calHolidays"></div>
 
           <div class="cal-footer">
@@ -86,7 +96,7 @@
               <span class="cal-legend-item"><span class="cal-legend-swatch is-holiday"></span>Public holiday</span>
               <span class="cal-legend-item"><span class="cal-legend-swatch is-today"></span>Today</span>
             </div>
-            <div class="cal-legend" id="calLegend" aria-label="Leave type legend"></div>
+            <div class="cal-legend" id="calLegend" aria-label="Legend"></div>
           </div>
         </div>
 
@@ -201,10 +211,11 @@
   </div>
 </div>
 
-<!-- Day leave view: compact read-only list of everyone's leave on the
-     clicked date (see openDayLeaveModal() in calendar.js). Clicking
-     anywhere in a day cell opens this; the "+" button in the cell's
-     corner opens leaveRequestModal instead, via goToNewLeaveRequest(). -->
+<!-- Day view (shared by Leave and Rooms modes): compact read-only list of
+     everyone's leave / room bookings on the clicked date (see showDayModal()
+     in calendar.js). Clicking anywhere in a day cell opens this; the "+"
+     button in the cell's corner opens the new-request / new-booking form
+     directly. -->
 <div class="modal fade" id="dayLeaveModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered day-leave-dialog">
     <div class="modal-content">
@@ -216,7 +227,7 @@
       <div class="modal-footer">
         <button type="button" class="btn btn-ghost btn-sm" data-bs-dismiss="modal">Close</button>
         <button type="button" class="btn btn-accent btn-sm d-inline-flex align-items-center gap-1" id="dayLeaveNewRequestBtn">
-          <i class="bi bi-plus-lg"></i>New request
+          <i class="bi bi-plus-lg"></i><span id="dayNewBtnLabel">New request</span>
         </button>
       </div>
     </div>
@@ -354,6 +365,244 @@
         </div>
       </form>
 
+    </div>
+  </div>
+</div>
+
+<!-- Room booking: create / edit / view one booking (see openBookingModal()
+     in calendar.js). Fields lock to read-only when the signed-in user
+     neither owns the booking nor is an admin. Styles: "Room booking modal"
+     section of calendar.css. -->
+<div class="modal fade" id="roomBookingModal" tabindex="-1" aria-labelledby="bookingModalTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <form id="roomBookingForm" novalidate>
+
+        <!-- Header: title + dismiss -->
+        <div class="modal-header-booking">
+          <h5 class="modal-title-booking" id="bookingModalTitle">
+            <i class="bi bi-calendar2-plus-fill"></i>New booking
+          </h5>
+          <button type="button" class="btn-close btn-close-sm" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+
+        <div class="modal-body-booking">
+
+          <!-- Context + conflict notices (filled by openBookingModal() / showBookingConflicts()) -->
+          <p id="bookingOwnerLine" class="booking-owner hidden">
+            <i class="bi bi-person-circle text-primary"></i>
+            <span id="bookingOwnerText"></span>
+          </p>
+
+          <div id="bookingConflictAlert" class="booking-conflict hidden" role="alert">
+            <i class="bi bi-exclamation-triangle-fill"></i>
+            <div id="bookingConflictBody"></div>
+          </div>
+
+          <p id="bookingRecurrenceNote" class="booking-note hidden">
+            <i class="bi bi-info-circle me-1 text-primary"></i>
+            <span id="bookingRecurrenceNoteText"></span>
+          </p>
+
+          <!-- Meeting title -->
+          <div>
+            <label class="form-label-compact" for="bookingTitleInput">
+              <i class="bi bi-chat-left-quote text-secondary"></i>Meeting Title
+            </label>
+            <input type="text" class="form-control form-control-sm form-control-compact" id="bookingTitleInput" maxlength="120" placeholder="e.g. Weekly team sync" required>
+          </div>
+
+          <!-- Room & schedule -->
+          <div class="booking-section-card">
+            <div>
+              <label class="form-label-compact" for="bookingRoomInput">
+                <i class="bi bi-door-closed text-secondary"></i>Room
+              </label>
+              <select class="form-select form-select-sm form-select-compact" id="bookingRoomInput" required></select>
+            </div>
+
+            <!-- From | To (To is hidden when editing one occurrence) -->
+            <div class="booking-grid booking-grid-dates">
+              <div>
+                <label class="form-label-compact" for="bookingDateInput">
+                  <i class="bi bi-calendar-event text-secondary"></i><span id="bookingDateLabelText">From</span>
+                </label>
+                <input type="date" class="form-control form-control-sm form-control-compact" id="bookingDateInput" required>
+              </div>
+              <div id="bookingDateToWrap">
+                <label class="form-label-compact" for="bookingDateToInput">
+                  <i class="bi bi-calendar-event text-secondary"></i>To
+                </label>
+                <input type="date" class="form-control form-control-sm form-control-compact" id="bookingDateToInput" required>
+              </div>
+            </div>
+
+            <!-- Start | End: labels share one row; duration chip sits at the far right of the End label row -->
+            <div class="booking-grid booking-grid-times">
+              <div>
+                <label class="form-label-compact" for="bookingStartInput">
+                  <i class="bi bi-clock text-secondary"></i>Start
+                </label>
+                <input type="time" class="form-control form-control-sm form-control-compact" id="bookingStartInput" step="900" required>
+              </div>
+              <div>
+                <div class="booking-label-row">
+                  <label class="form-label-compact" for="bookingEndInput">
+                    <i class="bi bi-clock-history text-secondary"></i>End
+                  </label>
+                  <span class="duration-indicator-chip hidden" id="bookingDurationChip"></span>
+                </div>
+                <input type="time" class="form-control form-control-sm form-control-compact" id="bookingEndInput" step="900" required>
+              </div>
+            </div>
+            <!-- From/To range summary (filled by updateRepeatUI()) -->
+            <p id="bookingRangeHint" class="booking-note booking-range-hint hidden"></p>
+          </div>
+
+          <!-- Invitees: optional, so the input only appears while the switch is on
+               (see setInviteesEnabled()). Off = no invitees are saved. -->
+          <div>
+            <div class="booking-label-row">
+              <label class="form-label-compact" for="bookingInviteesToggle">
+                <i class="bi bi-people text-secondary"></i>Invitees <span class="text-muted fw-normal text-lowercase">(optional)</span>
+              </label>
+              <div class="form-check form-switch booking-switch">
+                <input class="form-check-input" type="checkbox" role="switch" id="bookingInviteesToggle" aria-label="Add invitees">
+              </div>
+            </div>
+            <div id="bookingInviteesBody" class="hidden">
+              <input type="text" class="form-control form-control-sm form-control-compact" id="bookingInviteesInput" maxlength="500" placeholder="e.g. Alice, Bob, Charlie" aria-label="Invitees">
+              <div id="bookingInviteePreview" class="invitee-preview"></div>
+            </div>
+          </div>
+
+          <!-- Recurrence: new bookings only. Hidden when editing, since an
+               edit changes that one occurrence (see openBookingModal()). -->
+          <div id="bookingRecurrenceGroup">
+            <!-- Repeats (left half) | Repeat until (right half, disabled
+                 until a repeat is chosen; see updateRepeatUI()). -->
+            <div class="booking-grid booking-grid-repeat">
+              <div>
+                <label class="form-label-compact" for="bookingRepeatSelect">
+                  <i class="bi bi-repeat text-secondary"></i>Repeats
+                </label>
+                <select class="form-select form-select-sm form-select-compact" id="bookingRepeatSelect">
+                  <option value="none">Does not repeat</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="yearly">Yearly</option>
+                </select>
+              </div>
+              <div id="bookingRepeatUntilWrap">
+                <label class="form-label-compact" for="bookingRepeatUntil">
+                  <i class="bi bi-calendar-check text-secondary"></i>Repeat until
+                </label>
+                <input type="date" class="form-control form-control-sm form-control-compact" id="bookingRepeatUntil" disabled>
+              </div>
+            </div>
+
+            <div id="bookingRepeatFields" class="booking-repeat-fields recurrence-box hidden">
+              <!-- Shown for a From/To range and/or a repeat.
+                   "Days off" = the Policies page weekly working pattern
+                   (policy_weekly_working_days): day off (0) is skipped,
+                   half day (0.5) keeps the morning only (ends at 12:00). -->
+              <div>
+                <div class="form-check form-check-compact">
+                  <input class="form-check-input" type="checkbox" id="bookingIgnoreDayOff" checked>
+                  <label class="form-check-label" for="bookingIgnoreDayOff">Ignore days off</label>
+                </div>
+                <div class="form-check form-check-compact">
+                  <input class="form-check-input" type="checkbox" id="bookingIgnoreHoliday" checked>
+                  <label class="form-check-label" for="bookingIgnoreHoliday">Ignore public holidays</label>
+                </div>
+              </div>
+
+              <div>
+                <label class="form-label-compact d-block mb-1">Move ignored date to nearest</label>
+                <div class="btn-group btn-group-direction w-100" role="group" aria-label="Direction to move ignored dates">
+                  <input type="radio" class="btn-check" name="bookingRepeatDirection" id="bookingDirBackward" value="backward" checked>
+                  <label class="btn btn-outline-secondary btn-sm" for="bookingDirBackward">
+                    <i class="bi bi-arrow-left me-1"></i>Earlier day
+                  </label>
+
+                  <input type="radio" class="btn-check" name="bookingRepeatDirection" id="bookingDirForward" value="forward">
+                  <label class="btn btn-outline-secondary btn-sm" for="bookingDirForward">
+                    Later day<i class="bi bi-arrow-right ms-1"></i>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Notes -->
+          <div>
+            <label class="form-label-compact" for="bookingNotesInput">
+              <i class="bi bi-card-text text-secondary"></i>Notes <span class="text-muted fw-normal text-lowercase">(optional)</span>
+            </label>
+            <textarea class="form-control form-control-sm form-control-compact" id="bookingNotesInput" rows="2" maxlength="500" placeholder="Optional agenda, projector request, or meeting notes..."></textarea>
+          </div>
+
+        </div>
+
+        <!-- Actions -->
+        <div class="modal-footer-booking">
+          <button type="button" class="btn btn-rose btn-sm me-auto hidden" id="bookingDeleteBtn">
+            <i class="bi bi-trash3 me-1"></i>Delete
+          </button>
+          <button type="button" class="btn btn-ghost btn-sm" data-bs-dismiss="modal">Close</button>
+          <button type="submit" class="btn btn-accent btn-sm" id="bookingSubmitBtn">
+            <i class="bi bi-check-lg me-1"></i>Save booking
+          </button>
+        </div>
+
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Manage rooms (admin only): list + add/edit form (see openRoomsModal()
+     in calendar.js). -->
+<div class="modal fade" id="roomsModal" tabindex="-1" aria-labelledby="roomsModalTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="roomsModalTitle">Manage rooms</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="roomsList" class="rooms-list"></div>
+        <form id="roomForm" class="room-form">
+          <h6 id="roomFormTitle" class="room-form-title">Add room</h6>
+          <div class="row g-2">
+            <div class="col-12 col-sm-7">
+              <label class="form-label" for="roomNameInput">Name</label>
+              <input type="text" class="form-control form-control-sm" id="roomNameInput" maxlength="80" required>
+            </div>
+            <div class="col-6 col-sm-5">
+              <label class="form-label" for="roomCapacityInput">Capacity</label>
+              <input type="number" class="form-control form-control-sm" id="roomCapacityInput" min="1" max="1000">
+            </div>
+            <div class="col-12">
+              <label class="form-label" for="roomLocationInput">Location</label>
+              <input type="text" class="form-control form-control-sm" id="roomLocationInput" maxlength="120" placeholder="e.g. 2nd floor, east wing">
+            </div>
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="roomActiveInput" checked>
+                <label class="form-check-label" for="roomActiveInput">Active (can be booked)</label>
+              </div>
+            </div>
+          </div>
+          <div class="d-flex justify-content-end gap-2 mt-3">
+            <button type="button" class="btn btn-ghost btn-sm hidden" id="roomFormCancelBtn">Cancel edit</button>
+            <button type="submit" class="btn btn-accent btn-sm" id="roomSubmitBtn">Add room</button>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost btn-sm" data-bs-dismiss="modal">Close</button>
+      </div>
     </div>
   </div>
 </div>

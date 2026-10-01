@@ -1,11 +1,28 @@
 /* =====================================================================
    ESS — Calendar page logic (pages/calendar.html)
 
-   Reads/writes the table from 04_holidays_schema.sql:
+   Reads/writes the tables from 05_calendar_schemas.sql:
      holidays(id, date UNIQUE, description, remark)
+     rooms(id, name, location, capacity, is_active)
+     room_bookings(id, room_id, booking_date, start_time, end_time, title,
+                   notes, invitees, recurrence_group_id, recurrence_rule,
+                   booked_by, booker_name)
 
    Primary view is a monthly calendar (grows with its content, the page
-   scrolls); Add/Upload/Danger-zone give admins the same
+   scrolls) with two modes — Leave (default) and Rooms — plus a yearly
+   Holidays table. In Rooms mode every cell shows that day's room bookings;
+   "+" / "New booking" opens the booking form; owners (and admins) can
+   edit/delete a booking, everyone else sees it read-only; admins also get
+   "Manage rooms". A booking can carry free-text invitees and can repeat
+   (daily/weekly/monthly/yearly — see "Room booking: recurrence" below): a
+   series is one row per date sharing a recurrence_group_id. A booking is
+   entered as From / To dates: From..To is the same time every day (a daily
+   series), and "Repeats" repeats that whole block — only the options that
+   fit the block are offered (see ruleFitsRange()). Days off
+   (policy_weekly_working_days = 0) and public holidays can be skipped;
+   on half days (= 0.5, morning only) an occurrence is trimmed to end at
+   12:00. Edit = that date only; delete = that
+   date, this + following, or the whole series. Add/Upload/Danger-zone give admins the same
    create/add/bulk-upload/clear capability as before.
 
    Connection (same pattern as policies.js / leaves.js):
@@ -17,7 +34,7 @@
    validation, in-file dedupe, editable preview grid, separate Append
    vs Overwrite actions, each going through a SECURITY DEFINER RPC
    (admin_append_holidays / admin_overwrite_holidays / admin_clear_holidays
-   — see 04_holidays_schema.sql) so each bulk action runs as one atomic
+   — see 05_calendar_schemas.sql) so each bulk action runs as one atomic
    transaction server-side.
    ===================================================================== */
 (function () {
@@ -125,17 +142,34 @@
   let leaveRows = [];                // raw approved-leave rows for the loaded range; leavesMap is rebuilt from these
   let workingValues = null;          // Map(isodow 1=Mon..7=Sun -> working_value) from policy_weekly_working_days; null = not loaded
 
-  function colorForLeaveType(typeId) {
-    if (!leaveTypeColors.has(typeId)) {
-      leaveTypeColors.set(typeId, LEAVE_COLOR_PALETTE[leaveTypeColors.size % LEAVE_COLOR_PALETTE.length]);
-    }
-    return leaveTypeColors.get(typeId);
-  }
+  // One stable palette colour per id, handed out in first-seen order.
+  const makeColorFor = (map) => (id) => {
+    if (!map.has(id)) map.set(id, LEAVE_COLOR_PALETTE[map.size % LEAVE_COLOR_PALETTE.length]);
+    return map.get(id);
+  };
+  const colorForLeaveType = makeColorFor(leaveTypeColors);
+
+  // Room booking state (Rooms mode). Bookings are single-day, so
+  // bookingsMap is simply 'yyyy-mm-dd' -> [entry], sorted by start time.
+  const roomColors = new Map();       // room_id -> hex color
+  const colorForRoom = makeColorFor(roomColors);
+  const roomsMap = new Map();         // room_id -> { id, name, location, capacity, is_active }
+  const bookingsMap = new Map();      // 'yyyy-mm-dd' -> [{ id, roomId, roomName, date, start, end, title, notes, bookedBy, bookerName }]
+  let bookingRows = [];               // raw rows for the loaded range; bookingsMap is rebuilt from these
+  let roomFilter = '';                // '' = all rooms, otherwise a room_id string
+  let isAdmin = false;                // strictly adminCheck === true (readOnly is also true while the check is unknown-false)
+  let myUserId = null;                // auth user id — compared to room_bookings.booked_by
+  let myName = '';                    // display-name snapshot written to room_bookings.booker_name
+  let bookingModal;
+  let roomsModal;
+  let editingBooking = null;          // bookingsMap entry being edited, null = new
+  let editingRoomId = null;
 
   const today = new Date();
   let viewYear = today.getFullYear();
   let viewMonth = today.getMonth(); // 0-11
-  let viewMode = 'grid';            // 'grid' | 'list' | 'holidays'
+  let viewMode = 'grid';            // 'grid' | 'holidays'
+  let mode = 'leave';               // 'leave' | 'room' — what the grid cells show
 
   /* ------------------------------------------------------------------ */
   /* UI helpers: toasts, error banner, generic confirm dialog             */
@@ -171,14 +205,26 @@
     panel.classList.remove('hidden');
   }
 
-  function showConfirmDialog({ title, message, confirmLabel = 'Confirm', danger = false }) {
+  // With `choices` ([{ value, label, hint }]) the dialog also shows a radio
+  // list and resolves to the selected value (first one preselected);
+  // otherwise it resolves true. Dismissing resolves false either way.
+  function showConfirmDialog({ title, message, confirmLabel = 'Confirm', danger = false, choices = null }) {
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
+      const choicesHtml = choices ? `<div class="confirm-choice-group">${choices.map((c, i) => `
+          <label class="confirm-choice">
+            <input type="radio" name="confirmChoice" value="${escapeHtml(c.value)}"${i === 0 ? ' checked' : ''}>
+            <span>
+              <span class="confirm-choice-title">${escapeHtml(c.label)}</span>
+              ${c.hint ? `<span class="confirm-choice-hint">${escapeHtml(c.hint)}</span>` : ''}
+            </span>
+          </label>`).join('')}</div>` : '';
       overlay.innerHTML = `
         <div class="modal-box">
           <h3>${escapeHtml(title)}</h3>
           <p>${message}</p>
+          ${choicesHtml}
           <div class="modal-actions">
             <button type="button" class="btn btn-ghost btn-sm" data-action="cancel">Cancel</button>
             <button type="button" class="btn btn-sm ${danger ? 'btn-rose' : 'btn-accent'}" data-action="confirm">${escapeHtml(confirmLabel)}</button>
@@ -188,7 +234,10 @@
       const cleanup = (result) => { overlay.remove(); resolve(result); };
       overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => cleanup(false));
       overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(false); });
-      overlay.querySelector('[data-action="confirm"]').addEventListener('click', () => cleanup(true));
+      overlay.querySelector('[data-action="confirm"]').addEventListener('click', () => {
+        const checked = choices && overlay.querySelector('input[name="confirmChoice"]:checked');
+        cleanup(choices ? (checked ? checked.value : choices[0].value) : true);
+      });
     });
   }
 
@@ -272,11 +321,19 @@
     }
   }
 
-  function errorMessage(err) {
+  const ERROR_TEXT = {
+    holiday: { '42501': 'Not saved: only admins can change holidays.', '23505': 'A holiday already exists on that date.' },
+    room: { '42501': 'Not saved: only admins can manage rooms.', '23505': 'A room with that name already exists.' },
+    booking: {
+      '42501': 'Not saved: you can only change your own bookings, in an active room.',
+      '23P01': 'That room is already booked during an overlapping time.',
+      '23514': 'End time must be after the start time.'
+    }
+  };
+
+  function errorMessage(err, ctx = 'holiday') {
     if (!err) return 'Something went wrong. Try again.';
-    if (err.code === '42501') return 'Not saved: only admins can change holidays.';
-    if (err.code === '23505') return 'A holiday already exists on that date.';
-    return err.message || 'Something went wrong. Try again.';
+    return (ERROR_TEXT[ctx] && ERROR_TEXT[ctx][err.code]) || err.message || 'Something went wrong. Try again.';
   }
 
   /* ------------------------------------------------------------------ */
@@ -291,10 +348,13 @@
   const nextMonthBtn = $('#nextMonthBtn');
   const todayBtn = $('#todayBtn');
   const refreshBtn = $('#refreshBtn');
-  const calList = $('#calList');
   const calWeekdays = $('.cal-weekdays', calCard);
   const calHolidays = $('#calHolidays');
-  const viewBtns = { grid: $('#viewGridBtn'), list: $('#viewListBtn'), holidays: $('#viewHolidaysBtn') };
+  const viewBtns = { grid: $('#viewGridBtn'), holidays: $('#viewHolidaysBtn') };
+  const modeBtns = { leave: $('#modeLeaveBtn'), room: $('#modeRoomBtn') };
+  const roomFilterWrap = $('#roomFilterWrap');
+  const roomFilterSelect = $('#roomFilterSelect');
+  const manageRoomsBtn = $('#manageRoomsBtn');
 
   const uploadPanel = $('#uploadPanel');
   const filePicker = $('#filePicker');
@@ -402,48 +462,27 @@
         div.appendChild(pill);
       }
 
-      const leaves = leavesMap.get(key);
-      if (leaves && leaves.length > 0) {
-        const list = document.createElement('div');
-        list.className = 'cal-leave-list';
-        // Deliberately no stopPropagation here: clicking a pill (or the
-        // "..." overflow marker) bubbles up to the cell's own click
-        // handler and opens the full day view below.
-
-        leaves.slice(0, 3).forEach((entry) => {
-          const pill = document.createElement('span');
-          pill.className = 'cal-leave-pill';
-          pill.style.setProperty('--leave-color', colorForLeaveType(entry.typeId));
-          pill.textContent = `${entry.name}: ${entry.fraction === 1 ? '1' : '0.5'}`;
-          pill.title = `${entry.name} — ${entry.typeName} (${entry.fraction === 1 ? 'full day' : 'half day'})`;
-          list.appendChild(pill);
-        });
-
-        if (leaves.length > 3) {
-          const more = document.createElement('span');
-          more.className = 'cal-leave-more';
-          more.textContent = '...';
-          more.title = leaves.slice(3)
-            .map((entry) => `${entry.name}: ${entry.fraction === 1 ? '1' : '0.5'} (${entry.typeName})`)
-            .join('\n');
-          list.appendChild(more);
-        }
-
-        div.appendChild(list);
+      // Leave mode draws leavesMap, Rooms mode draws bookingsMap — same pill
+      // list (up to 3 + "..." overflow). Deliberately no stopPropagation:
+      // clicking a pill bubbles up to the cell's click handler (day view).
+      const entries = (mode === 'room' ? bookingsMap : leavesMap).get(key);
+      if (entries && entries.length > 0) {
+        div.appendChild(buildPillList(entries, mode === 'room' ? bookingPill : leavePill));
       }
 
       if (!cell.otherMonth) {
         div.classList.add('is-clickable');
-        div.addEventListener('click', () => openDayLeaveModal(key));
+        div.addEventListener('click', () => openDayModal(key));
 
+        const addLabel = mode === 'room' ? 'New booking' : 'New leave request';
         const addBtn = document.createElement('button');
         addBtn.type = 'button';
         addBtn.className = 'cal-day-add';
-        addBtn.title = 'New leave request';
-        addBtn.setAttribute('aria-label', `New leave request for ${key}`);
+        addBtn.title = addLabel;
+        addBtn.setAttribute('aria-label', `${addLabel} for ${key}`);
         addBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
           + 'stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>';
-        addBtn.addEventListener('click', (e) => { e.stopPropagation(); goToNewLeaveRequest(key); });
+        addBtn.addEventListener('click', (e) => { e.stopPropagation(); addForDate(key); });
         div.appendChild(addBtn);
       }
 
@@ -451,18 +490,62 @@
     });
 
     calGrid.replaceChildren(fragment);
-    if (viewMode === 'list') renderList();
-    else if (viewMode === 'holidays') renderHolidayList();
+    if (viewMode === 'holidays') renderHolidayList();
+  }
+
+  // One pill descriptor per entry: { color, text, title, more }.
+  // `more` is the tooltip line when the entry is folded into the "..." marker.
+  function leavePill(entry) {
+    const f = entry.fraction === 1 ? '1' : '0.5';
+    return {
+      color: colorForLeaveType(entry.typeId),
+      text: `${entry.name}: ${f}`,
+      title: `${entry.name} \u2014 ${entry.typeName} (${entry.fraction === 1 ? 'full day' : 'half day'})`,
+      more: `${entry.name}: ${f} (${entry.typeName})`
+    };
+  }
+
+  function bookingPill(b) {
+    const title = `${b.start}\u2013${b.end} \u00b7 ${b.roomName} \u2014 ${b.title} (${b.bookerName})`
+      + (b.recurrenceGroupId ? `\n${recurrenceLabel(b.recurrenceRule)}` : '')
+      + (b.invitees ? `\nInvitees: ${b.invitees}` : '');
+    return {
+      color: colorForRoom(b.roomId),
+      text: `${b.recurrenceGroupId ? '\u21bb ' : ''}${b.start}\u2013${b.end} ${b.title}`,
+      title,
+      more: title.split('\n')[0]
+    };
+  }
+
+  function buildPillList(entries, toPill) {
+    const list = document.createElement('div');
+    list.className = 'cal-leave-list';
+    entries.slice(0, 3).forEach((entry) => {
+      const d = toPill(entry);
+      const pill = document.createElement('span');
+      pill.className = 'cal-leave-pill';
+      pill.style.setProperty('--leave-color', d.color);
+      pill.textContent = d.text;
+      pill.title = d.title;
+      list.appendChild(pill);
+    });
+    if (entries.length > 3) {
+      const more = document.createElement('span');
+      more.className = 'cal-leave-more';
+      more.textContent = '...';
+      more.title = entries.slice(3).map((entry) => toPill(entry).more).join('\n');
+      list.appendChild(more);
+    }
+    return list;
   }
 
   /* ------------------------------------------------------------------ */
-  /* List (agenda) view: same month, same data (holidaysMap + leavesMap)   */
+  /* View + mode switching                                                */
   /* ------------------------------------------------------------------ */
-  function setViewMode(mode) {
-    viewMode = ['grid', 'list', 'holidays'].includes(mode) ? mode : 'grid';
+  function setViewMode(nextView) {
+    viewMode = nextView === 'holidays' ? 'holidays' : 'grid';
     calGrid.classList.toggle('hidden', viewMode !== 'grid');
     calWeekdays.classList.toggle('hidden', viewMode !== 'grid');
-    calList.classList.toggle('hidden', viewMode !== 'list');
     calHolidays.classList.toggle('hidden', viewMode !== 'holidays');
     // Holidays view spans the whole year: hide the month picker, arrows step by year.
     const yearly = viewMode === 'holidays';
@@ -474,96 +557,23 @@
       btn.classList.toggle('is-active', name === viewMode);
       btn.setAttribute('aria-pressed', String(name === viewMode));
     });
-    if (viewMode === 'list') renderList();
-    else if (viewMode === 'holidays') renderHolidayList();
+    if (viewMode === 'holidays') renderHolidayList();
   }
 
-  function renderList() {
-    const total = daysInMonth(viewYear, viewMonth);
-    const todayKey = dateKey(today.getFullYear(), today.getMonth(), today.getDate());
-    const fragment = document.createDocumentFragment();
-
-    for (let day = 1; day <= total; day++) {
-      const key = dateKey(viewYear, viewMonth, day);
-      const holiday = holidaysMap.get(key);
-      const leaves = leavesMap.get(key) || [];
-      if (!holiday && leaves.length === 0) continue;
-
-      const row = document.createElement('div');
-      row.className = 'cal-list-row' + (key === todayKey ? ' is-today' : '');
-
-      const date = document.createElement('div');
-      date.className = 'cal-list-date';
-      const num = document.createElement('span');
-      num.className = 'cal-list-daynum';
-      num.textContent = String(day);
-      const dow = document.createElement('span');
-      dow.className = 'cal-list-dow';
-      dow.textContent = parseDateOnly(key).toLocaleDateString(undefined, { weekday: 'short' });
-      date.append(num, dow);
-
-      const items = document.createElement('div');
-      items.className = 'cal-list-items';
-
-      // Primary = what it is (holiday name / person); secondary = detail
-      // (remark / leave type · duration). Color dot carries the type.
-      const makeItem = (color, primary, secondary, onClick, disabled) => {
-        const item = document.createElement('button');
-        item.type = 'button';
-        item.className = 'cal-list-item';
-        item.style.setProperty('--dot', color);
-        item.disabled = !!disabled;
-        if (onClick) item.addEventListener('click', onClick);
-        const dot = document.createElement('span');
-        dot.className = 'cal-list-dot';
-        const main = document.createElement('span');
-        main.className = 'cal-list-primary';
-        main.textContent = primary;
-        const sub = document.createElement('span');
-        sub.className = 'cal-list-secondary';
-        sub.textContent = secondary;
-        item.append(dot, main, sub);
-        return item;
-      };
-
-      if (holiday) {
-        items.appendChild(makeItem(
-          'var(--cal-amber-300)',
-          holiday.description,
-          holiday.remark || 'Public holiday',
-          () => openHolidayModal(holiday),
-          readOnly
-        ));
-      }
-
-      leaves.forEach((entry) => {
-        items.appendChild(makeItem(
-          colorForLeaveType(entry.typeId),
-          entry.name,
-          `${entry.typeName} \u00b7 ${entry.fraction === 1 ? 'Full day' : 'Half day'}`,
-          () => openLeaveDetailModal(entry)
-        ));
-      });
-
-      const add = document.createElement('button');
-      add.type = 'button';
-      add.className = 'cal-day-add cal-list-add';
-      add.title = 'New leave request';
-      add.setAttribute('aria-label', `New leave request for ${key}`);
-      add.innerHTML = '<i class="bi bi-plus-lg"></i>';
-      add.addEventListener('click', () => goToNewLeaveRequest(key));
-
-      row.append(date, items, add);
-      fragment.appendChild(row);
-    }
-
-    if (!fragment.childNodes.length) {
-      const empty = document.createElement('div');
-      empty.className = 'cal-list-empty';
-      empty.textContent = `No holidays or leave in ${MONTHS[viewMonth]} ${viewYear}.`;
-      fragment.appendChild(empty);
-    }
-    calList.replaceChildren(fragment);
+  // Leave | Rooms. Only the grid is mode-aware, so switching mode from the
+  // yearly Holidays table returns to the grid.
+  function setMode(next) {
+    mode = next === 'room' ? 'room' : 'leave';
+    Object.entries(modeBtns).forEach(([name, btn]) => {
+      btn.classList.toggle('is-active', name === mode);
+      btn.setAttribute('aria-pressed', String(name === mode));
+    });
+    roomFilterWrap.classList.toggle('hidden', mode !== 'room');
+    manageRoomsBtn.classList.toggle('hidden', mode !== 'room' || !isAdmin);
+    renderLegend();
+    if (viewMode !== 'grid') setViewMode('grid');
+    renderCalendar();
+    loadDataForView().catch(reportLoadError);
   }
 
   // Holidays view: every holiday in viewYear, from holidaysMap (already
@@ -644,11 +654,17 @@
   function goToMonth(year, month) {
     viewYear = year;
     viewMonth = month;
-    renderCalendar(); // instant nav using cached holidays; leave pills pop in once the fetch below resolves
-    loadLeavesForView().catch((err) => {
-      console.error('calendar: failed to load leave data', err);
-      toast('Couldn\u2019t load leave data for this month.', 'danger');
-    });
+    renderCalendar(); // instant nav using cached holidays; leave/booking pills pop in once the fetch below resolves
+    loadDataForView().catch(reportLoadError);
+  }
+
+  // Loads whatever the current mode draws on the grid.
+  function loadDataForView() {
+    return mode === 'room' ? loadBookingsForView() : loadLeavesForView();
+  }
+  function reportLoadError(err) {
+    console.error('calendar: failed to load data', err);
+    toast(`Couldn\u2019t load ${mode === 'room' ? 'room booking' : 'leave'} data for this month.`, 'danger');
   }
   function shiftMonth(delta) {
     if (viewMode === 'holidays') { goToMonth(viewYear + delta, viewMonth); return; }
@@ -708,15 +724,20 @@
     renderLegend();
   }
 
+  // Leave mode: leave types. Rooms mode: bookable (active) rooms.
   function renderLegend() {
     if (!calLegend) return;
     calLegend.innerHTML = '';
-    leaveTypeNames.forEach((name, typeId) => {
+    calLegend.setAttribute('aria-label', mode === 'room' ? 'Room legend' : 'Leave type legend');
+    const items = mode === 'room'
+      ? Array.from(roomsMap.values()).filter((r) => r.is_active).map((r) => [colorForRoom(r.id), r.name])
+      : Array.from(leaveTypeNames).map(([typeId, name]) => [colorForLeaveType(typeId), name]);
+    items.forEach(([color, name]) => {
       const item = document.createElement('span');
       item.className = 'cal-legend-item';
       const swatch = document.createElement('span');
       swatch.className = 'cal-legend-swatch';
-      swatch.style.background = colorForLeaveType(typeId);
+      swatch.style.background = color;
       item.append(swatch, name);
       calLegend.appendChild(item);
     });
@@ -828,7 +849,6 @@
   async function loadLeavesForView() {
     const { startKey, endKey } = visibleRangeKeys();
     calGrid.classList.add('is-loading');
-    calList.classList.add('is-loading');
     calHolidays.classList.add('is-loading');
     try {
       const { data: rpcRows, error } = await db.rpc('list_calendar_leave', { p_from: startKey, p_to: endKey });
@@ -859,19 +879,18 @@
       renderCalendar();
     } finally {
       calGrid.classList.remove('is-loading');
-      calList.classList.remove('is-loading');
       calHolidays.classList.remove('is-loading');
     }
   }
 
-  // Compact read-only day view: everyone's leave on the clicked date.
-  // Name + leave type are the primary line; days/reason are a single
-  // minimal secondary line, kept short on purpose (see the design notes
-  // in the CSS). Opened by clicking anywhere in a day cell.
-  function openDayLeaveModal(key) {
+  // Compact read-only day view, shared by both modes: name + a coloured tag
+  // are the primary line; a single minimal secondary line sits beside them
+  // (see the design notes in the CSS). Opened by clicking anywhere in a day
+  // cell. `describe(entry)` -> { name, tag, color, meta }.
+  function showDayModal(key, entries, describe, emptyText, newLabel) {
     dayLeaveModalKey = key;
-    const entries = leavesMap.get(key) || [];
     $('#dayLeaveModalTitle').textContent = formatDateLong(key);
+    $('#dayNewBtnLabel').textContent = newLabel;
 
     const body = $('#dayLeaveModalBody');
     body.innerHTML = '';
@@ -879,10 +898,11 @@
     if (entries.length === 0) {
       const empty = document.createElement('p');
       empty.className = 'day-leave-empty';
-      empty.textContent = 'No leave on this date.';
+      empty.textContent = emptyText;
       body.appendChild(empty);
     } else {
       entries.forEach((entry, index) => {
+        const d = describe(entry);
         const item = document.createElement('div');
         item.className = 'day-leave-item';
         item.dataset.index = String(index);
@@ -891,17 +911,16 @@
         main.className = 'day-leave-main';
         const name = document.createElement('span');
         name.className = 'day-leave-name';
-        name.textContent = entry.name;
+        name.textContent = d.name;
         const type = document.createElement('span');
         type.className = 'day-leave-type';
-        type.textContent = entry.typeName;
-        type.style.setProperty('--leave-color', colorForLeaveType(entry.typeId));
+        type.textContent = d.tag;
+        type.style.setProperty('--leave-color', d.color);
         main.append(name, type);
 
         const meta = document.createElement('div');
         meta.className = 'day-leave-meta';
-        const daysLabel = `${entry.totalDays} day${entry.totalDays === 1 ? '' : 's'}`;
-        meta.textContent = entry.reason ? `${daysLabel} · ${entry.reason}` : daysLabel;
+        meta.textContent = d.meta;
 
         const chevron = document.createElement('span');
         chevron.className = 'day-leave-chevron';
@@ -914,6 +933,38 @@
     }
 
     dayLeaveModal.show();
+  }
+
+  function openDayLeaveModal(key) {
+    showDayModal(key, leavesMap.get(key) || [], (entry) => {
+      const daysLabel = `${entry.totalDays} day${entry.totalDays === 1 ? '' : 's'}`;
+      return {
+        name: entry.name,
+        tag: entry.typeName,
+        color: colorForLeaveType(entry.typeId),
+        meta: entry.reason ? `${daysLabel} \u00b7 ${entry.reason}` : daysLabel
+      };
+    }, 'No leave on this date.', 'New request');
+  }
+
+  function openDayBookingsModal(key) {
+    showDayModal(key, bookingsMap.get(key) || [], (b) => ({
+      name: (b.recurrenceGroupId ? '\u21bb ' : '') + b.title,
+      tag: b.roomName,
+      color: colorForRoom(b.roomId),
+      meta: `${b.start}\u2013${b.end} \u00b7 ${b.bookerName}`
+    }), roomsMap.size ? 'No bookings on this date.' : 'No rooms have been set up yet.', 'New booking');
+  }
+
+  function openDayModal(key) {
+    if (mode === 'room') openDayBookingsModal(key);
+    else openDayLeaveModal(key);
+  }
+
+  // The "+" in a cell / "New ..." in the day view: new leave request or new booking.
+  function addForDate(key) {
+    if (mode === 'room') openBookingModal(null, key);
+    else goToNewLeaveRequest(key);
   }
 
   // Approval steps per request id, fetched once from the same RPC leaves.js
@@ -960,6 +1011,840 @@
         (!entry.reviewer || entry.reviewer === 'Admin' || [...adminNames.values()].includes(entry.reviewer))
     });
     leaveDetailModal.show();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Room booking: load                                                   */
+  /* ------------------------------------------------------------------ */
+
+  // Non-fatal: if the rooms table isn't installed yet, the Leave view keeps
+  // working and Rooms mode simply has no rooms.
+  async function loadRooms() {
+    try {
+      const { data, error } = await db.from('rooms')
+        .select('id, name, location, capacity, is_active')
+        .order('name', { ascending: true });
+      if (error) throw error;
+      roomsMap.clear();
+      (data || []).forEach((r) => roomsMap.set(r.id, r));
+      // reserve palette slots in id order so a room keeps its colour when others are added/renamed
+      (data || []).slice().sort((x, y) => x.id - y.id).forEach((r) => colorForRoom(r.id));
+    } catch (err) {
+      console.warn('calendar: could not load rooms:', err);
+      roomsMap.clear();
+    }
+    renderRoomFilter();
+    renderLegend();
+  }
+
+  function renderRoomFilter() {
+    const keep = roomFilter;
+    roomFilterSelect.innerHTML = '';
+    const all = document.createElement('option');
+    all.value = '';
+    all.textContent = 'All rooms';
+    roomFilterSelect.appendChild(all);
+    roomsMap.forEach((r) => {
+      if (!r.is_active) return;
+      const opt = document.createElement('option');
+      opt.value = String(r.id);
+      opt.textContent = r.name;
+      roomFilterSelect.appendChild(opt);
+    });
+    roomFilter = $$('option', roomFilterSelect).some((o) => o.value === keep) ? keep : '';
+    roomFilterSelect.value = roomFilter;
+  }
+
+  const hhmm = (t) => String(t).slice(0, 5); // 'HH:MM:SS' -> 'HH:MM'
+
+  function rebuildBookingsMap() {
+    bookingsMap.clear();
+    bookingRows.forEach((r) => {
+      if (roomFilter && String(r.room_id) !== roomFilter) return;
+      const room = roomsMap.get(r.room_id);
+      if (!bookingsMap.has(r.booking_date)) bookingsMap.set(r.booking_date, []);
+      bookingsMap.get(r.booking_date).push({
+        id: r.id,
+        roomId: r.room_id,
+        roomName: room ? room.name : 'Unknown room',
+        date: r.booking_date,
+        start: hhmm(r.start_time),
+        end: hhmm(r.end_time),
+        title: r.title,
+        notes: r.notes,
+        invitees: r.invitees,
+        recurrenceGroupId: r.recurrence_group_id,
+        recurrenceRule: r.recurrence_rule,
+        bookedBy: r.booked_by,
+        bookerName: r.booker_name
+      });
+    });
+    bookingsMap.forEach((list) => list.sort((a, b) => a.start.localeCompare(b.start) || a.roomName.localeCompare(b.roomName)));
+  }
+
+  // Everyone signed in sees the whole schedule (RLS select = true).
+  async function loadBookingsForView() {
+    const { startKey, endKey } = visibleRangeKeys();
+    calGrid.classList.add('is-loading');
+    try {
+      const { data, error } = await db.from('room_bookings')
+        .select('id, room_id, booking_date, start_time, end_time, title, notes, invitees, recurrence_group_id, recurrence_rule, booked_by, booker_name')
+        .gte('booking_date', startKey)
+        .lte('booking_date', endKey)
+        .order('start_time', { ascending: true });
+      if (error) throw error;
+      bookingRows = data || [];
+      rebuildBookingsMap();
+      renderCalendar();
+    } finally {
+      calGrid.classList.remove('is-loading');
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Room booking: recurrence (pure date logic, no DOM / Supabase)        */
+  /*                                                                      */
+  /* Works on local-midnight Date objects and 'yyyy-mm-dd' keys. A booking*/
+  /* is date + time-of-day, so every occurrence keeps its times and only  */
+  /* the date moves — nothing here can drift with DST.                    */
+  /*                                                                      */
+  /* A booking is a BLOCK: From..To (one day when they are equal), same   */
+  /* time every day. "Repeats" repeats the whole block.                   */
+  /*                                                                      */
+  /* Flow in submitBookingCreate():                                       */
+  /*   expandBlocks()      the block + its repeats up to the end date     */
+  /*   applyAdjustments()  days off / holidays shifted, half days trimmed */
+  /* ------------------------------------------------------------------ */
+  const MAX_OCCURRENCES = 366;
+  const RECURRENCE_RULES = ['daily', 'weekly', 'monthly', 'yearly'];
+  const RECURRENCE_LABELS = {
+    daily: 'Repeats daily',
+    weekly: 'Repeats weekly',
+    monthly: 'Repeats monthly',
+    yearly: 'Repeats yearly'
+  };
+  // A half working day (policy_weekly_working_days.working_value = 0.5) is
+  // morning-only: nothing may run past this time.
+  const HALF_DAY_END = '12:00';
+  // Same as the seed in 03_policies_schemas.sql — only used if the weekly
+  // pattern couldn't be loaded.
+  const DEFAULT_WORKING_VALUES = new Map([[1, 1], [2, 1], [3, 1], [4, 1], [5, 1], [6, 0], [7, 0]]);
+
+  const recurrenceLabel = (rule) => RECURRENCE_LABELS[rule] || '';
+  const toDateKey = (d) => dateKey(d.getFullYear(), d.getMonth(), d.getDate());
+
+  /** 'Alice, Bob ,, Carol' -> ['Alice', 'Bob', 'Carol'] */
+  function parseInvitees(text) {
+    return (text || '').split(',').map((s) => s.trim()).filter(Boolean);
+  }
+
+  function addDays(date, days) {
+    const d = new Date(date);
+    d.setDate(d.getDate() + days);
+    return d;
+  }
+
+  // Whole days from a to b (both local-midnight), safe across DST changes.
+  const daysBetween = (a, b) => Math.round((b - a) / 86400000);
+
+  // Jan 31 + 1 month -> Feb 28/29 (clamped), not Mar 3. Years reuse this
+  // (Feb 29 -> Feb 28 on non-leap years).
+  function addMonthsClamped(date, months) {
+    const d = new Date(date.getFullYear(), date.getMonth() + months, 1);
+    const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    d.setDate(Math.min(date.getDate(), lastDay));
+    return d;
+  }
+
+  // Start date of the n-th repeat of a block starting on `from`. Always
+  // computed from the ORIGINAL start (never from the previous repeat), so a
+  // "31st of the month" series clamps to Feb 28 and then returns to the 31st.
+  function repeatStart(from, rule, n) {
+    if (rule === 'daily') return addDays(from, n);
+    if (rule === 'weekly') return addDays(from, n * 7);
+    if (rule === 'monthly') return addMonthsClamped(from, n);
+    return addMonthsClamped(from, n * 12);
+  }
+
+  /**
+   * Whether a From..To block can repeat by `rule` without the next repeat
+   * overlapping it: the block must end before the next repeat starts.
+   *   one day            -> daily, weekly, monthly, yearly
+   *   2-7 days           -> weekly (Mon..Wed every week), monthly, yearly
+   *   over a week        -> monthly (12th..18th every month), yearly
+   *   about a month+     -> yearly
+   */
+  function ruleFitsRange(rule, fromKey, toKey) {
+    const from = parseDateOnly(fromKey);
+    return parseDateOnly(toKey) < repeatStart(from, rule, 1);
+  }
+
+  /**
+   * The blocks of a booking: From..To itself plus each repeat up to
+   * `untilKey` (a repeat is included whole when it STARTS on or before that
+   * date). `rule` is 'none' or one of RECURRENCE_RULES.
+   *
+   * `truncated` is true when the MAX_OCCURRENCES cap (total days) cut the
+   * booking short, so the caller can warn instead of silently under-booking.
+   */
+  function expandBlocks(fromKey, toKey, rule, untilKey) {
+    const from = parseDateOnly(fromKey);
+    const span = daysBetween(from, parseDateOnly(toKey)) + 1;
+    const repeating = RECURRENCE_RULES.includes(rule);
+    const until = repeating ? parseDateOnly(untilKey) : null;
+
+    const blocks = [];
+    let total = 0;
+    let truncated = false;
+    for (let n = 0; n <= MAX_OCCURRENCES; n++) {
+      const start = n === 0 ? from : repeatStart(from, rule, n);
+      if (n > 0 && start > until) break;
+      let len = span;
+      if (total + len > MAX_OCCURRENCES) { len = MAX_OCCURRENCES - total; truncated = true; }
+      if (len > 0) blocks.push({ from: start, to: addDays(start, len - 1) });
+      total += len;
+      if (truncated || !repeating) break;
+    }
+    return { blocks, truncated };
+  }
+
+  // Working value (0 day off / 0.5 half day / 1 full day) of a date, from
+  // policy_weekly_working_days (isodow 1 = Mon .. 7 = Sun). Falls back to the
+  // seeded Mon-Fri pattern if the table couldn't be loaded.
+  function bookingWorkingValue(date) {
+    const pattern = workingValues || DEFAULT_WORKING_VALUES;
+    const isodow = date.getDay() === 0 ? 7 : date.getDay();
+    return pattern.has(isodow) ? pattern.get(isodow) : 0;
+  }
+
+  /**
+   * Applies the "ignore" rules to every day of every block and returns
+   * [{ date, start, end, trimmed }] sorted by date.
+   *
+   *   public holiday            -> blocked
+   *   day off      (value 0)    -> blocked            (ignoreDaysOff)
+   *   half day     (value 0.5)  -> morning only: `end` is cut back to 12:00;
+   *                                if `start` is already 12:00 or later there
+   *                                is no morning left, so the day is blocked
+   *
+   * A blocked day moves to the nearest allowed day — `direction` 'backward'
+   * (earlier, default) or 'forward' (later). Inside a multi-day block it can
+   * only move within that block (a Saturday in a Mon-Sun range is skipped, it
+   * never becomes a booking before the From date); a single-day block may move
+   * up to two weeks. With no allowed day the occurrence is dropped rather than
+   * booked on a day off. Two days landing on the same date collapse into one
+   * instead of double-booking. `trimmed` is true when `end` was cut to 12:00.
+   *
+   * options: { ignoreDaysOff, holidaySet (Set of 'yyyy-mm-dd' or null), direction }
+   */
+  function applyAdjustments(blocks, start, end, options) {
+    const { ignoreDaysOff, holidaySet, direction } = options;
+    const step = direction === 'forward' ? 1 : -1;
+
+    const isBlocked = (d) => {
+      if (holidaySet && holidaySet.has(toDateKey(d))) return true;
+      if (!ignoreDaysOff) return false;
+      const w = bookingWorkingValue(d);
+      return w <= 0 || (w < 1 && start >= HALF_DAY_END);
+    };
+
+    const seen = new Set();
+    const out = [];
+    blocks.forEach((block) => {
+      const bounded = block.to > block.from;
+      for (let day = new Date(block.from); day <= block.to; day = addDays(day, 1)) {
+        let d = new Date(day);
+        let ok = true;
+        for (let guard = 0; guard < 14 && isBlocked(d); guard++) {
+          d = addDays(d, step);
+          if (bounded && (d < block.from || d > block.to)) { ok = false; break; }
+        }
+        if (!ok || isBlocked(d)) continue;
+
+        const key = toDateKey(d);
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        let occEnd = end;
+        let trimmed = false;
+        if (ignoreDaysOff) {
+          const w = bookingWorkingValue(d);
+          if (w > 0 && w < 1 && end > HALF_DAY_END) { occEnd = HALF_DAY_END; trimmed = true; }
+        }
+        out.push({ date: d, start, end: occEnd, trimmed });
+      }
+    });
+    return out.sort((x, y) => x.date - y.date);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Room booking: create / edit / view / delete                          */
+  /* ------------------------------------------------------------------ */
+  const BOOKING_FIELDS = ['#bookingRoomInput', '#bookingDateInput', '#bookingDateToInput', '#bookingStartInput',
+    '#bookingEndInput', '#bookingTitleInput', '#bookingInviteesToggle', '#bookingInviteesInput', '#bookingNotesInput'];
+
+  // Comma-separated invitee text -> chips (built with textContent, so names stay inert).
+  function renderInviteeChips(text) {
+    const wrap = $('#bookingInviteePreview');
+    wrap.replaceChildren(...parseInvitees(text).map((name) => {
+      const chip = document.createElement('span');
+      chip.className = 'invitee-tag-chip';
+      const icon = document.createElement('i');
+      icon.className = 'bi bi-person';
+      chip.append(icon, name);
+      return chip;
+    }));
+  }
+
+  // Invitees are optional: the input (and chip preview) only shows while the switch is on.
+  function setInviteesEnabled(on) {
+    $('#bookingInviteesToggle').checked = on;
+    $('#bookingInviteesBody').classList.toggle('hidden', !on);
+  }
+
+  // "1h 30m" chip next to the End field; flags an end that isn't after the start.
+  function updateBookingDuration() {
+    const chip = $('#bookingDurationChip');
+    const start = $('#bookingStartInput').value;
+    const end = $('#bookingEndInput').value;
+    chip.classList.remove('is-invalid');
+    if (!start || !end) { chip.classList.add('hidden'); return; }
+    const toMin = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+    const diff = toMin(end) - toMin(start);
+    chip.classList.remove('hidden');
+    if (diff > 0) {
+      const h = Math.floor(diff / 60);
+      const m = diff % 60;
+      chip.innerHTML = `<i class="bi bi-hourglass-split"></i>${h > 0 ? `${h}h ${m > 0 ? m + 'm' : '00m'}` : `${m}m`}`;
+    } else {
+      chip.classList.add('is-invalid');
+      chip.innerHTML = '<i class="bi bi-exclamation-circle"></i>Invalid end';
+    }
+  }
+
+  /* ---- From / To  ->  which "Repeats" options make sense ---- */
+  const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const monthShort = (m) => MONTHS[m].slice(0, 3);
+  function ordinal(n) {
+    const v = n % 100;
+    if (v >= 11 && v <= 13) return `${n}th`;
+    return `${n}${['th', 'st', 'nd', 'rd'][n % 10] || 'th'}`;
+  }
+  const formatBookingDay = (d) =>
+    d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+
+  // Option text. A single day keeps plain names; a range says what repeats:
+  // "Weekly (Mon \u2192 Wed)", "Monthly (12th \u2192 18th)", "Yearly (Oct 12 \u2192 Oct 18)".
+  function repeatOptionLabel(rule, from, to) {
+    if (!from || !to || to <= from) return { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', yearly: 'Yearly' }[rule];
+    if (rule === 'weekly') return `Weekly (${WEEKDAY_SHORT[from.getDay()]} \u2192 ${WEEKDAY_SHORT[to.getDay()]})`;
+    if (rule === 'monthly') return `Monthly (${ordinal(from.getDate())} \u2192 ${ordinal(to.getDate())})`;
+    if (rule === 'yearly') {
+      return `Yearly (${monthShort(from.getMonth())} ${from.getDate()} \u2192 ${monthShort(to.getMonth())} ${to.getDate()})`;
+    }
+    return 'Daily';
+  }
+
+  // Rebuilds the "Repeats" list for the current From/To: only rules whose
+  // period is longer than the block are offered. Keeps the current choice if
+  // it is still valid, otherwise falls back to "Does not repeat".
+  function refreshRepeatOptions(reset) {
+    const sel = $('#bookingRepeatSelect');
+    const fromKey = $('#bookingDateInput').value;
+    const toKey = $('#bookingDateToInput').value || fromKey;
+    const previous = reset ? 'none' : sel.value;
+    const valid = !!fromKey && toKey >= fromKey;
+    const from = valid ? parseDateOnly(fromKey) : null;
+    const to = valid ? parseDateOnly(toKey) : null;
+
+    const rules = valid ? RECURRENCE_RULES.filter((r) => ruleFitsRange(r, fromKey, toKey)) : RECURRENCE_RULES;
+    sel.replaceChildren(...[['none', 'Does not repeat'], ...rules.map((r) => [r, repeatOptionLabel(r, from, to)])]
+      .map(([value, text]) => {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = text;
+        return opt;
+      }));
+    sel.value = $$('option', sel).some((o) => o.value === previous) ? previous : 'none';
+    updateRepeatUI();
+  }
+
+  // Shows what the current From/To + Repeats choice will do: the range hint,
+  // the "Repeat until" field (only when repeating) and the ignore rules (when
+  // there is a range or a repeat — anything that produces more than one day).
+  function updateRepeatUI() {
+    const fromKey = $('#bookingDateInput').value;
+    const toKey = $('#bookingDateToInput').value || fromKey;
+    const ranged = !!fromKey && toKey > fromKey;
+    const rule = $('#bookingRepeatSelect').value;
+    const repeating = rule !== 'none';
+
+    $('#bookingRepeatFields').classList.toggle('hidden', !ranged && !repeating);
+    // Repeat until is always visible but only usable once a repeat is chosen.
+    const untilInput = $('#bookingRepeatUntil');
+    untilInput.disabled = !repeating;
+    if (!repeating) untilInput.value = '';
+
+    const hint = $('#bookingRangeHint');
+    hint.classList.toggle('hidden', !ranged);
+    if (ranged) {
+      const from = parseDateOnly(fromKey);
+      const to = parseDateOnly(toKey);
+      const days = daysBetween(from, to) + 1;
+      hint.textContent = `${formatBookingDay(from)} \u2192 ${formatBookingDay(to)}: ${days} days, one booking per day at the same time.`
+        + (repeating ? ' Each repeat books the same block again.' : '');
+    }
+  }
+
+  // From/To changed. To never goes before From, and while To equals From it
+  // keeps following From, so moving a one-day booking doesn't turn it into a range.
+  let dateToFollowsFrom = true;
+  function onBookingDatesChanged(source) {
+    const from = $('#bookingDateInput');
+    const to = $('#bookingDateToInput');
+    if (source === 'from') {
+      if (dateToFollowsFrom || !to.value || to.value < from.value) to.value = from.value;
+    } else {
+      if (to.value && to.value < from.value) to.value = from.value;
+      dateToFollowsFrom = to.value === from.value;
+    }
+    to.min = from.value;
+    const until = $('#bookingRepeatUntil');
+    until.min = to.value || from.value;
+    if (until.value && until.value < until.min) until.value = until.min;
+    refreshRepeatOptions(false);
+  }
+
+  // Next full hour when booking today, otherwise 8:00 — one hour long.
+  function suggestedTimes(key) {
+    const now = new Date();
+    const isToday = key === dateKey(now.getFullYear(), now.getMonth(), now.getDate());
+    const h = Math.min(Math.max(isToday ? now.getHours() + 1 : 8, 0), 22);
+    return { start: `${pad2(h)}:00`, end: `${pad2(h + 1)}:00` };
+  }
+
+  function showBookingConflicts(conflicts) {
+    const box = $('#bookingConflictAlert');
+    const items = conflicts.slice(0, 8).map((c) =>
+      `<li>${escapeHtml(formatDateLong(c.occ.date))}, ${c.occ.start}\u2013${c.occ.end} \u2014 clashes with \u201c${escapeHtml(c.existing.title)}\u201d (${hhmm(c.existing.start_time)}\u2013${hhmm(c.existing.end_time)})</li>`);
+    if (conflicts.length > 8) items.push(`<li>\u2026and ${conflicts.length - 8} more</li>`);
+    $('#bookingConflictBody').innerHTML = `<strong>This room is already booked at that time.</strong><ul>${items.join('')}</ul>`;
+    box.classList.remove('hidden');
+    box.scrollIntoView({ block: 'nearest' });
+  }
+  const hideBookingConflicts = () => $('#bookingConflictAlert').classList.add('hidden');
+
+  // occs = [{ date, start, end }]. Returns the ones that overlap an existing
+  // booking in that room (half-open ranges, so back-to-back is fine).
+  // This is the friendly pre-check; the room_bookings exclusion constraint
+  // remains the actual guard against races.
+  async function findBookingConflicts(roomId, occs, excludeId) {
+    const dates = occs.map((o) => o.date).sort();
+    const { data, error } = await db.from('room_bookings')
+      .select('id, title, booking_date, start_time, end_time')
+      .eq('room_id', roomId)
+      .gte('booking_date', dates[0])
+      .lte('booking_date', dates[dates.length - 1]);
+    if (error) throw error;
+    const existing = (data || []).filter((b) => b.id !== excludeId);
+    const out = [];
+    occs.forEach((occ) => {
+      const hit = existing.find((b) => b.booking_date === occ.date
+        && hhmm(b.start_time) < occ.end && occ.start < hhmm(b.end_time));
+      if (hit) out.push({ occ, existing: hit });
+    });
+    return out;
+  }
+
+  // Admins can change any booking; everyone else only their own (RLS enforces the same).
+  function canManageBooking(b) {
+    return isAdmin || (!!myUserId && b.bookedBy === myUserId);
+  }
+
+  // entry = existing bookingsMap entry (edit / read-only view) or null (new,
+  // prefilled with prefillDate).
+  function openBookingModal(entry, prefillDate) {
+    const rooms = Array.from(roomsMap.values())
+      .filter((r) => r.is_active || (entry && r.id === entry.roomId));
+    if (!rooms.length) {
+      toast(isAdmin ? 'No rooms yet \u2014 add one with \u201cManage rooms\u201d.' : 'No rooms are available yet. Ask an admin to add one.', 'danger');
+      return;
+    }
+
+    editingBooking = entry || null;
+    const editable = !entry || canManageBooking(entry);
+    const [titleIcon, titleText] = !entry ? ['bi-calendar2-plus-fill', 'New booking']
+      : editable ? ['bi-pencil-square', 'Edit booking'] : ['bi-eye', 'Booking details'];
+    $('#bookingModalTitle').innerHTML = `<i class="bi ${titleIcon}"></i>${titleText}`;
+
+    const sel = $('#bookingRoomInput');
+    sel.innerHTML = '';
+    rooms.forEach((r) => {
+      const opt = document.createElement('option');
+      opt.value = String(r.id);
+      const label = r.capacity ? `${r.name} (Capacity: ${r.capacity})` : r.name;
+      opt.textContent = r.is_active ? label : `${label} (inactive)`;
+      sel.appendChild(opt);
+    });
+    const wantedRoom = entry ? String(entry.roomId) : roomFilter;
+    sel.value = $$('option', sel).some((o) => o.value === wantedRoom) ? wantedRoom : sel.options[0].value;
+
+    const suggested = suggestedTimes(prefillDate || '');
+    $('#bookingDateInput').value = entry ? entry.date : (prefillDate || '');
+    $('#bookingDateToInput').value = $('#bookingDateInput').value;
+    $('#bookingDateToInput').min = $('#bookingDateInput').value;
+    dateToFollowsFrom = true;
+    // Editing changes one occurrence: a single "Date", no To.
+    $('#bookingDateToWrap').classList.toggle('hidden', !!entry);
+    $('#bookingDateLabelText').textContent = entry ? 'Date' : 'From';
+    $('#bookingStartInput').value = entry ? entry.start : suggested.start;
+    $('#bookingEndInput').value = entry ? entry.end : suggested.end;
+    $('#bookingTitleInput').value = entry ? entry.title : '';
+    $('#bookingInviteesInput').value = entry ? entry.invitees || '' : '';
+    $('#bookingNotesInput').value = entry ? entry.notes || '' : '';
+    renderInviteeChips(entry ? entry.invitees : '');
+    setInviteesEnabled(!!(entry && entry.invitees));
+    updateBookingDuration();
+    hideBookingConflicts();
+
+    // Recurrence setup is for new bookings only; an existing occurrence just gets a note.
+    $('#bookingRecurrenceGroup').classList.toggle('hidden', !!entry);
+    $('#bookingRepeatUntil').value = '';
+    $('#bookingRepeatUntil').min = $('#bookingDateInput').value;
+    $('#bookingIgnoreDayOff').checked = true;
+    $('#bookingIgnoreHoliday').checked = true;
+    $('#bookingDirBackward').checked = true;
+    refreshRepeatOptions(true);
+    const note = $('#bookingRecurrenceNote');
+    const inSeries = !!(entry && entry.recurrenceGroupId);
+    note.classList.toggle('hidden', !inSeries);
+    if (inSeries) {
+      $('#bookingRecurrenceNoteText').textContent = `Part of a recurring series (${recurrenceLabel(entry.recurrenceRule).toLowerCase()}).`
+        + (editable ? ' Editing only changes this date.' : '');
+    }
+
+    const owner = $('#bookingOwnerLine');
+    owner.classList.toggle('hidden', !entry);
+    if (entry) $('#bookingOwnerText').textContent = `Booked by ${entry.bookerName}${entry.bookedBy === myUserId ? ' (you)' : ''}`;
+
+    BOOKING_FIELDS.forEach((f) => { $(f).disabled = !editable; });
+    $('#bookingSubmitBtn').classList.toggle('hidden', !editable);
+    $('#bookingDeleteBtn').classList.toggle('hidden', !entry || !editable);
+    bookingModal.show();
+  }
+
+  // update/delete blocked by RLS affect 0 rows without raising an error,
+  // so callers pass `.select('id')` and we treat an empty result as a failure.
+  const noRowsError = () => ({ message: 'Nothing was changed \u2014 you may not have permission, or the booking no longer exists.' });
+
+  async function onSubmitBooking(e) {
+    e.preventDefault();
+    hideBookingConflicts();
+    const base = {
+      room_id: Number($('#bookingRoomInput').value),
+      booking_date: $('#bookingDateInput').value,
+      start_time: $('#bookingStartInput').value,
+      end_time: $('#bookingEndInput').value,
+      title: $('#bookingTitleInput').value.trim(),
+      notes: $('#bookingNotesInput').value.trim() || null,
+      // switch off = no invitees (the typed text is kept in the field in case it is switched back on)
+      invitees: $('#bookingInviteesToggle').checked
+        ? parseInvitees($('#bookingInviteesInput').value).join(', ') || null
+        : null
+    };
+    if (!base.room_id || !base.booking_date || !base.start_time || !base.end_time || !base.title) {
+      toast('Please fill in the room, date, time and title.', 'danger');
+      return;
+    }
+    if (base.end_time <= base.start_time) {
+      toast(ERROR_TEXT.booking['23514'], 'danger');
+      return;
+    }
+    // To date (new bookings only; an edit is always one date).
+    const dateTo = editingBooking ? base.booking_date : ($('#bookingDateToInput').value || base.booking_date);
+    if (dateTo < base.booking_date) {
+      toast('The \u201cTo\u201d date can\u2019t be before the \u201cFrom\u201d date.', 'danger');
+      return;
+    }
+    // No booking into the past (5 min grace). When editing, only if the date/time was actually moved.
+    const moved = !editingBooking
+      || base.booking_date !== editingBooking.date || base.start_time !== editingBooking.start;
+    if (moved && parseDateOnly(base.booking_date).setHours(...base.start_time.split(':').map(Number))
+        < Date.now() - 5 * 60 * 1000) {
+      toast('You can\u2019t book a time in the past.', 'danger');
+      return;
+    }
+
+    const submitBtn = $('#bookingSubmitBtn');
+    submitBtn.disabled = true;
+    try {
+      if (editingBooking) await submitBookingEdit(base);
+      else await submitBookingCreate(base, dateTo);
+    } catch (err) {
+      toast(errorMessage(err, 'booking'), 'danger');
+    } finally {
+      submitBtn.disabled = false;
+    }
+  }
+
+  async function afterBookingSaved(message) {
+    toast(message, 'success');
+    bookingModal.hide();
+    try { await loadBookingsForView(); } catch (err) { reportLoadError(err); }
+  }
+
+  // Edit = this one date/row only (the series link is frozen in the DB too).
+  async function submitBookingEdit(base) {
+    const conflicts = await findBookingConflicts(
+      base.room_id, [{ date: base.booking_date, start: base.start_time, end: base.end_time }], editingBooking.id);
+    if (conflicts.length) { showBookingConflicts(conflicts); return; }
+
+    const { data, error } = await db.from('room_bookings').update(base).eq('id', editingBooking.id).select('id');
+    if (!error && (!data || !data.length)) throw noRowsError();
+    if (error) throw error;
+    await afterBookingSaved('Booking updated.');
+  }
+
+  async function submitBookingCreate(base, dateTo) {
+    const rule = $('#bookingRepeatSelect').value;
+    const ranged = dateTo > base.booking_date;
+    let occs;                 // [{ date, start, end, trimmed }] — times can differ per date (half days)
+    let truncated = false;
+
+    if (!ranged && rule === 'none') {
+      // One plain booking: taken exactly as entered, no ignore rules.
+      occs = [{ date: base.booking_date, start: base.start_time, end: base.end_time, trimmed: false }];
+    } else {
+      // A From..To range is a daily series; "Repeats" repeats that block.
+      let until = null;
+      if (rule !== 'none') {
+        until = $('#bookingRepeatUntil').value;
+        if (!until) { toast('Please choose an end date for the repeat.', 'danger'); return; }
+        if (until < dateTo) { toast('The repeat end date can\u2019t be before the booking\u2019s \u201cTo\u201d date.', 'danger'); return; }
+      }
+
+      // Days off / half days come from the Policies page weekly pattern.
+      if (!workingValues) await loadWorkingPattern();
+
+      let blocks;
+      ({ blocks, truncated } = expandBlocks(base.booking_date, dateTo, rule, until));
+      // holidaysMap holds every holiday (loadHolidays() fetches the whole table), so no extra query.
+      occs = applyAdjustments(blocks, base.start_time, base.end_time, {
+        ignoreDaysOff: $('#bookingIgnoreDayOff').checked,
+        holidaySet: $('#bookingIgnoreHoliday').checked ? new Set(holidaysMap.keys()) : null,
+        direction: ($('input[name="bookingRepeatDirection"]:checked') || {}).value || 'backward'
+      }).map((o) => ({ date: toDateKey(o.date), start: o.start, end: o.end, trimmed: o.trimmed }));
+
+      if (!occs.length) {
+        toast('No bookable dates in that range \u2014 every date falls on a day off or public holiday.', 'danger');
+        return;
+      }
+    }
+
+    const conflicts = await findBookingConflicts(base.room_id, occs, null);
+    if (conflicts.length) { showBookingConflicts(conflicts); return; }
+
+    const groupId = occs.length > 1 ? crypto.randomUUID() : null;
+    const rows = occs.map((occ) => ({
+      ...base,
+      booking_date: occ.date,
+      start_time: occ.start,
+      end_time: occ.end,
+      booker_name: myName || (isAdmin ? 'Admin' : 'Unknown'), // booked_by defaults to auth.uid() in the table
+      recurrence_group_id: groupId,
+      // a From..To range with no repeat is a daily series
+      recurrence_rule: groupId ? (rule === 'none' ? 'daily' : rule) : null
+    }));
+
+    // One bulk INSERT = one statement: the whole series is saved, or none of it.
+    const { error } = await db.from('room_bookings').insert(rows);
+    if (error) throw error;
+
+    if (truncated) {
+      toast(`The repeat was capped at ${MAX_OCCURRENCES} occurrences. Use an earlier end date to cover a shorter range.`);
+    }
+    const trimmedCount = occs.filter((o) => o.trimmed).length;
+    let message = rows.length > 1 ? `Booked ${rows.length} occurrences.` : 'Room booked.';
+    if (trimmedCount) {
+      message += ` ${trimmedCount} on half ${trimmedCount === 1 ? 'day was' : 'days were'} shortened to end at ${HALF_DAY_END}.`;
+    }
+    await afterBookingSaved(message);
+  }
+
+  // Single booking: plain confirm. Part of a series: choose this date, this
+  // + all following, or the whole series. All three are one filtered DELETE,
+  // covered by the same owner-or-admin RLS policy.
+  async function onDeleteBookingClick() {
+    if (!editingBooking) return;
+    const b = editingBooking;
+    let scope = 'one';
+
+    if (b.recurrenceGroupId) {
+      scope = await showConfirmDialog({
+        title: 'Delete booking',
+        message: `\u201c${escapeHtml(b.title)}\u201d is part of a recurring series (${escapeHtml(recurrenceLabel(b.recurrenceRule).toLowerCase())}). What would you like to delete?`,
+        confirmLabel: 'Delete',
+        danger: true,
+        choices: [
+          { value: 'one', label: 'Just this occurrence', hint: formatDateLong(b.date) },
+          { value: 'following', label: 'This and all following', hint: `From ${formatDateLong(b.date)} onward` },
+          { value: 'series', label: 'The entire series', hint: 'Removes every date in this recurring booking' }
+        ]
+      });
+      if (!scope) return;
+    } else {
+      const ok = await showConfirmDialog({
+        title: 'Delete booking',
+        message: `Delete \u201c${escapeHtml(b.title)}\u201d in ${escapeHtml(b.roomName)} on ${escapeHtml(formatDateLong(b.date))} (${b.start}\u2013${b.end})?`,
+        confirmLabel: 'Delete booking',
+        danger: true
+      });
+      if (!ok) return;
+    }
+
+    let q = db.from('room_bookings').delete();
+    if (scope === 'one') q = q.eq('id', b.id);
+    else if (scope === 'following') q = q.eq('recurrence_group_id', b.recurrenceGroupId).gte('booking_date', b.date);
+    else q = q.eq('recurrence_group_id', b.recurrenceGroupId);
+
+    const { data, error } = await q.select('id');
+    if (error || !data || !data.length) { toast(errorMessage(error || noRowsError(), 'booking'), 'danger'); return; }
+
+    await afterBookingSaved(scope === 'one' ? 'Booking deleted.' : `Deleted ${data.length} bookings.`);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Rooms manager (admin only)                                           */
+  /* ------------------------------------------------------------------ */
+  function resetRoomForm() {
+    editingRoomId = null;
+    $('#roomForm').reset();
+    $('#roomActiveInput').checked = true;
+    $('#roomFormTitle').textContent = 'Add room';
+    $('#roomSubmitBtn').textContent = 'Add room';
+    $('#roomFormCancelBtn').classList.add('hidden');
+  }
+
+  function editRoom(room) {
+    editingRoomId = room.id;
+    $('#roomNameInput').value = room.name;
+    $('#roomLocationInput').value = room.location || '';
+    $('#roomCapacityInput').value = room.capacity ?? '';
+    $('#roomActiveInput').checked = !!room.is_active;
+    $('#roomFormTitle').textContent = `Edit ${room.name}`;
+    $('#roomSubmitBtn').textContent = 'Save room';
+    $('#roomFormCancelBtn').classList.remove('hidden');
+    $('#roomNameInput').focus();
+  }
+
+  function renderRoomsList() {
+    const list = $('#roomsList');
+    const fragment = document.createDocumentFragment();
+    roomsMap.forEach((room) => {
+      const row = document.createElement('div');
+      row.className = 'rooms-row' + (room.is_active ? '' : ' is-inactive');
+
+      const swatch = document.createElement('span');
+      swatch.className = 'rooms-swatch';
+      swatch.style.background = colorForRoom(room.id);
+
+      const info = document.createElement('div');
+      info.className = 'rooms-info';
+      const name = document.createElement('span');
+      name.className = 'rooms-name';
+      name.textContent = room.name;
+      const meta = document.createElement('span');
+      meta.className = 'rooms-meta';
+      meta.textContent = [
+        room.location || 'No location',
+        room.capacity ? `${room.capacity} seats` : 'Capacity not set',
+        room.is_active ? null : 'Inactive'
+      ].filter(Boolean).join(' \u00b7 ');
+      info.append(name, meta);
+
+      const actions = document.createElement('div');
+      actions.className = 'rooms-actions';
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'btn-icon-only';
+      edit.title = 'Edit room';
+      edit.setAttribute('aria-label', `Edit ${room.name}`);
+      edit.innerHTML = editIconSvg();
+      edit.addEventListener('click', () => editRoom(room));
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'btn-icon-only';
+      del.title = 'Delete room';
+      del.setAttribute('aria-label', `Delete ${room.name}`);
+      del.innerHTML = trashIconSvg();
+      del.addEventListener('click', () => onDeleteRoomClick(room));
+      actions.append(edit, del);
+
+      row.append(swatch, info, actions);
+      fragment.appendChild(row);
+    });
+    list.replaceChildren(fragment);
+  }
+
+  function openRoomsModal() {
+    resetRoomForm();
+    renderRoomsList();
+    roomsModal.show();
+  }
+
+  // Reload rooms (filter, legend, modal list) and the visible bookings after any room change.
+  async function afterRoomsChanged() {
+    await loadRooms();
+    renderRoomsList();
+    try { await loadBookingsForView(); } catch (err) { reportLoadError(err); }
+  }
+
+  async function onSubmitRoom(e) {
+    e.preventDefault();
+    const capacity = $('#roomCapacityInput').value.trim();
+    const payload = {
+      name: $('#roomNameInput').value.trim(),
+      location: $('#roomLocationInput').value.trim() || null,
+      capacity: capacity === '' ? null : Number(capacity),
+      is_active: $('#roomActiveInput').checked
+    };
+    if (!payload.name) { toast('Please enter a room name.', 'danger'); return; }
+
+    const submitBtn = $('#roomSubmitBtn');
+    submitBtn.disabled = true;
+    let error;
+    const wasEditing = !!editingRoomId;
+    if (wasEditing) {
+      let data;
+      ({ data, error } = await db.from('rooms').update(payload).eq('id', editingRoomId).select('id'));
+      if (!error && (!data || !data.length)) error = noRowsError();
+    } else {
+      ({ error } = await db.from('rooms').insert(payload));
+    }
+    submitBtn.disabled = false;
+
+    if (error) { toast(errorMessage(error, 'room'), 'danger'); return; }
+    toast(wasEditing ? 'Room updated.' : 'Room added.', 'success');
+    resetRoomForm();
+    await afterRoomsChanged();
+  }
+
+  async function onDeleteRoomClick(room) {
+    const ok = await showConfirmDialog({
+      title: 'Delete room',
+      message: `Delete \u201c${escapeHtml(room.name)}\u201d? <strong>All bookings for this room will be deleted too.</strong> To keep the history, untick \u201cActive\u201d instead.`,
+      confirmLabel: 'Delete room',
+      danger: true
+    });
+    if (!ok) return;
+
+    let { data, error } = await db.from('rooms').delete().eq('id', room.id).select('id');
+    if (!error && (!data || !data.length)) error = noRowsError();
+    if (error) { toast(errorMessage(error, 'room'), 'danger'); return; }
+
+    toast('Room deleted.', 'success');
+    if (editingRoomId === room.id) resetRoomForm();
+    await afterRoomsChanged();
   }
 
   /* ------------------------------------------------------------------ */
@@ -1373,29 +2258,59 @@
     holidayModal = new bootstrap.Modal($('#holidayModal'));
     dayLeaveModal = new bootstrap.Modal($('#dayLeaveModal'));
     leaveDetailModal = new bootstrap.Modal($('#leaveDetailModal'));
+    bookingModal = new bootstrap.Modal($('#roomBookingModal'));
+    roomsModal = new bootstrap.Modal($('#roomsModal'));
 
-    // Hand off to the shared leave request modal, prefilled with the date
-    // dayLeaveModal was showing. Waits for dayLeaveModal to fully close
-    // first (hidden.bs.modal) so the two Bootstrap modals/backdrops don't
-    // stack on top of each other.
+    // Hand off to the new-request / new-booking form (by mode), prefilled
+    // with the date the day view was showing. Waits for the day modal to
+    // fully close first (hidden.bs.modal) so the two Bootstrap
+    // modals/backdrops don't stack on top of each other.
     $('#dayLeaveNewRequestBtn').addEventListener('click', () => {
       const key = dayLeaveModalKey;
-      $('#dayLeaveModal').addEventListener('hidden.bs.modal', () => goToNewLeaveRequest(key), { once: true });
+      $('#dayLeaveModal').addEventListener('hidden.bs.modal', () => addForDate(key), { once: true });
       dayLeaveModal.hide();
     });
 
-    // Clicking a record in the day view drills into its detail — same
-    // hide-then-show handoff as the button above. Delegated on the list
-    // container since rows are rebuilt on every openDayLeaveModal() call.
+    // Clicking a record in the day view drills into its detail (leave detail,
+    // or the booking form — editable for owner/admin, read-only otherwise) —
+    // same hide-then-show handoff as the button above. Delegated on the list
+    // container since rows are rebuilt on every day-view open.
     $('#dayLeaveModalBody').addEventListener('click', (e) => {
       const row = e.target.closest('.day-leave-item');
       if (!row) return;
-      const entries = leavesMap.get(dayLeaveModalKey) || [];
+      const entries = (mode === 'room' ? bookingsMap : leavesMap).get(dayLeaveModalKey) || [];
       const entry = entries[Number(row.dataset.index)];
       if (!entry) return;
-      $('#dayLeaveModal').addEventListener('hidden.bs.modal', () => openLeaveDetailModal(entry), { once: true });
+      const open = mode === 'room' ? () => openBookingModal(entry) : () => openLeaveDetailModal(entry);
+      $('#dayLeaveModal').addEventListener('hidden.bs.modal', open, { once: true });
       dayLeaveModal.hide();
     });
+
+    $('#roomBookingForm').addEventListener('submit', onSubmitBooking);
+    $('#bookingDeleteBtn').addEventListener('click', onDeleteBookingClick);
+    $('#bookingInviteesInput').addEventListener('input', (e) => renderInviteeChips(e.target.value));
+    $('#bookingInviteesToggle').addEventListener('change', (e) => {
+      setInviteesEnabled(e.target.checked);
+      if (e.target.checked) $('#bookingInviteesInput').focus();
+    });
+    ['#bookingStartInput', '#bookingEndInput'].forEach((sel) => {
+      $(sel).addEventListener('input', updateBookingDuration);
+      $(sel).addEventListener('change', updateBookingDuration);
+    });
+    $('#bookingRepeatSelect').addEventListener('change', updateRepeatUI);
+    $('#bookingDateInput').addEventListener('change', () => onBookingDatesChanged('from'));
+    $('#bookingDateToInput').addEventListener('change', () => onBookingDatesChanged('to'));
+    $('#roomForm').addEventListener('submit', onSubmitRoom);
+    $('#roomFormCancelBtn').addEventListener('click', resetRoomForm);
+    manageRoomsBtn.addEventListener('click', openRoomsModal);
+    roomFilterSelect.addEventListener('change', () => {
+      roomFilter = roomFilterSelect.value;
+      rebuildBookingsMap();
+      renderCalendar();
+    });
+    modeBtns.leave.addEventListener('click', () => setMode('leave'));
+    modeBtns.room.addEventListener('click', () => setMode('room'));
+
     $('#holidayForm').addEventListener('submit', onSubmitHoliday);
     $('#holidayDeleteBtn').addEventListener('click', onDeleteHolidayClick);
     $('#addHolidayBtn').addEventListener('click', () => openHolidayModal(null));
@@ -1407,7 +2322,6 @@
     yearSelect.addEventListener('change', () => goToMonth(Number(yearSelect.value), viewMonth));
     refreshBtn.addEventListener('click', () => { showError(null); run(); });
     viewBtns.grid.addEventListener('click', () => setViewMode('grid'));
-    viewBtns.list.addEventListener('click', () => setViewMode('list'));
     viewBtns.holidays.addEventListener('click', () => setViewMode('holidays'));
 
     $('#downloadTemplateBtn').addEventListener('click', downloadHolidayTemplate);
@@ -1426,7 +2340,8 @@
       await loadHolidays();
       await loadWorkingPattern();
       await loadLeaveTypes();
-      await loadLeavesForView();
+      await loadRooms();
+      await loadDataForView();
       if (readOnly) applyReadOnly();
     } catch (err) {
       showError(`Couldn\u2019t load the calendar. ${err && err.message ? err.message : ''}`.trim(), run);
@@ -1456,6 +2371,9 @@
 
     const adminCheck = await checkAdmin(employee);
     readOnly = adminCheck === false;
+    isAdmin = adminCheck === true;
+    myUserId = session.user.id;
+    myName = (employee && employee.name) || '';
 
     // Wire the shared "New leave request" modal (assets/js/leaveRequestModal.js,
     // also used by leaves.js) so an empty day cell can file a request
