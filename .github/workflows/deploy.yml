@@ -1,0 +1,56 @@
+# Deploy workflow for GitHub Pages.
+#
+# Generates assets/config.js from GitHub Secrets at deploy time, so the real
+# Supabase URL/key are never committed to git.
+#
+# Add secrets in: Repo → Settings → Secrets and variables → Actions
+#   SUPABASE_URL, SUPABASE_ANON_KEY
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one deploy at a time; a newer run cancels an older in-progress one.
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate assets/config.js from secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::error::Missing SUPABASE_URL or SUPABASE_ANON_KEY repository secret."
+            exit 1
+          fi
+          cat > assets/config.js <<EOF
+          window.__SUPABASE_CONFIG__ = {
+            url: "$SUPABASE_URL",
+            anonKey: "$SUPABASE_ANON_KEY"
+          };
+          EOF
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

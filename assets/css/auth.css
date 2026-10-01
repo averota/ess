@@ -1,0 +1,164 @@
+/* =====================================================================
+   ESS — Login screen. Load AFTER styles.css on the login page only.
+   Uses shared tokens plus .form-label / .form-control / .btn-accent from
+   styles.css.
+   ===================================================================== */
+
+.auth-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+}
+@media (max-width: 900px) {
+  .auth-shell { grid-template-columns: 1fr; }
+  .auth-visual { display: none; }
+}
+
+.auth-visual {
+  background: var(--ink);
+  color: #EDF1F2;
+  position: relative;
+  padding: 56px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  overflow: hidden;
+}
+
+.auth-visual .grid-deco {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(circle at 30% 30%, black, transparent 75%);
+}
+
+.auth-visual .visual-content { position: relative; z-index: 1; }
+
+.auth-visual .room-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+  color: #C9D6D6;
+  width: fit-content;
+}
+
+.auth-visual h1 {
+  font-size: 2.6rem;
+  line-height: 1.15;
+  margin: 28px 0 12px;
+  max-width: 12ch;
+}
+
+.auth-visual p {
+  color: #B9C3C4;
+  max-width: 40ch;
+}
+
+.auth-form-side {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+}
+
+.auth-card .brand {
+  font-size: 1.25rem;
+  margin-bottom: 4px;
+}
+
+.auth-card .subtitle {
+  color: var(--ink-soft);
+  margin-bottom: 28px;
+}
+
+.auth-error {
+  display: none;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 0.88rem;
+  margin-bottom: 16px;
+}
+
+/* Password field with show/hide toggle */
+.password-field {
+  position: relative;
+}
+.password-field .form-control {
+  padding-right: 44px;
+}
+.password-toggle-btn {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: var(--ink-faint);
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.password-toggle-btn:hover {
+  color: var(--ink-soft);
+  background: var(--bg);
+}
+.password-toggle-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.password-toggle-btn svg {
+  width: 18px;
+  height: 18px;
+}
+.password-toggle-btn .icon-eye-off {
+  display: none;
+}
+.password-toggle-btn.is-visible .icon-eye {
+  display: none;
+}
+.password-toggle-btn.is-visible .icon-eye-off {
+  display: inline-flex;
+}
+
+/* Remember me checkbox */
+.remember-me-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 0;
+}
+.remember-me-row .form-check-input {
+  margin-left: 0;
+  cursor: pointer;
+}
+.remember-me-row .form-check-input:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+.remember-me-row .form-check-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.remember-me-row .form-check-label {
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  cursor: pointer;
+}

@@ -1,0 +1,100 @@
+<!--
+  Sidebar partial — injected into <aside id="sidebarRoot"></aside> by
+  assets/js/sidebar.js. Not a standalone page; fetched and dropped in via
+  fetch() + innerHTML. See assets/js/sidebar.js for the full contract
+  each page must follow to use this.
+-->
+<div class="sidebar-inner">
+  <!-- Logo + name: this whole row is the show/hide toggle (wired in sidebar.js). -->
+  <button type="button" class="sidebar-brand" id="sidebarToggle" aria-expanded="false" aria-label="Toggle menu" title="Toggle menu">
+    <span class="sidebar-logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="8" r="4"></circle>
+        <path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"></path>
+      </svg>
+    </span>
+    <span class="sidebar-brand-text">Employee Self Service</span>
+  </button>
+
+  <nav class="sidebar-nav">
+    <a href="dashboard.html" class="sidebar-link" data-page="dashboard" title="Dashboard">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 9.5 12 3l9 6.5"></path>
+        <path d="M5 10v10a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V10"></path>
+      </svg>
+      <span class="sidebar-label">Dashboard</span>
+    </a>
+    <a href="employees.html" class="sidebar-link" data-page="employees" title="Employees">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+        <circle cx="9" cy="7" r="4"></circle>
+        <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+        <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+      </svg>
+      <span class="sidebar-label">Employees</span>
+    </a>
+    <a href="leaves.html" class="sidebar-link" data-page="leaves" title="Leaves">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="18" rx="2"></rect>
+        <path d="M16 2v4M8 2v4M3 10h18"></path>
+      </svg>
+      <span class="sidebar-label">Leaves</span>
+    </a>
+    <a href="calendar.html" class="sidebar-link" data-page="calendar" title="Calendar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M8 2v4M16 2v4M3 8h18"></path>
+        <rect x="3" y="4" width="18" height="18" rx="2"></rect>
+        <path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"></path>
+      </svg>
+      <span class="sidebar-label">Calendar</span>
+    </a>
+    <!-- Admin only: hidden for everyone else by ACCESS in sidebar.js (not listed there). -->
+    <a href="policies.html" class="sidebar-link" data-page="policies" title="Policies">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+      </svg>
+      <span class="sidebar-label">Policies</span>
+    </a>
+    <!-- Comment out Users link for now, as we don't have a users.html page yet. Uncomment when ready to add it.
+    <a href="users.html" class="sidebar-link" data-page="users" title="Users">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="18" cy="15" r="3"></circle>
+        <circle cx="9" cy="7" r="4"></circle>
+        <path d="M10 15H6a4 4 0 0 0-4 4v2"></path>
+        <path d="m21.7 16.4-.9-.3"></path>
+        <path d="m15.2 13.9-.9-.3"></path>
+        <path d="m16.6 18.7.3-.9"></path>
+        <path d="m19.1 12.2.3-.9"></path>
+        <path d="m19.6 18.7-.4-1"></path>
+        <path d="m16.8 12.3-.4-1"></path>
+        <path d="m14.3 16.6 1-.4"></path>
+        <path d="m20.7 13.8 1-.4"></path>
+      </svg>
+      <span class="sidebar-label">Users</span>
+    </a>
+    -->
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="sidebar-user-card">
+      <!-- Collapsed rail: clicking the avatar opens a small menu with Sign out
+           (built in sidebar.js). When expanded it does nothing — the name and
+           the sign-out button are already visible. -->
+      <button type="button" class="sidebar-avatar-wrap" id="sidebarAvatarBtn" aria-haspopup="true" aria-expanded="false" aria-label="Account menu">
+        <span class="sidebar-avatar" id="sidebarUserAvatar" aria-hidden="true">?</span>
+        <span class="sidebar-avatar-dot" title="Active" aria-hidden="true"></span>
+      </button>
+      <div class="sidebar-user">
+        <p class="sidebar-user-name" id="sidebarUserName">—</p>
+        <p class="sidebar-user-role" id="sidebarUserRole"></p>
+      </div>
+      <button type="button" class="sidebar-signout-btn" id="sidebarSignOutBtn" title="Sign out" aria-label="Sign out">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m16 17 5-5-5-5"></path>
+          <path d="M21 12H9"></path>
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+        </svg>
+      </button>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,8 @@
+.DS_Store
+Thumbs.db
+*.local
+node_modules/
+
+# Ignore the entire Supabase and project data directory
+supabase/
+assets/config.js

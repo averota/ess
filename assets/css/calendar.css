@@ -1,0 +1,639 @@
+/* =====================================================================
+   ESS — Calendar page (pages/calendar.html)
+   Load AFTER Bootstrap 5.3 and styles.css. Visual language follows
+   employee_self_service.html: Inter, slate neutrals, indigo brand,
+   rounded-2xl cards, soft tinted chips, amber public holidays.
+
+   Scoped to body[data-page="calendar"] wherever it restyles shared
+   components (.btn-accent, modals, dropdown) so other pages that load
+   styles.css are unaffected.
+
+   .cal-card         whole calendar block (toolbar + weekdays + grid + footer)
+   .cal-toolbar      segmented nav (.cal-nav) + month/year selects (.cal-jump)
+   .cal-grid         7-col grid, rows via --week-rows; each row is at least
+                     --cal-row-min tall and grows with its content
+   .cal-day          date cell; .is-other-month / .is-today / .is-clickable
+   .cal-holiday-pill the (single) holiday on a day
+   .cal-leave-pill   one leave entry; tint comes from --leave-color (JS)
+   .cal-footer       static legend (holiday/today) + #calLegend (leave types)
+   ===================================================================== */
+
+:root {
+  --cal-brand: #4f46e5;
+  --cal-brand-dark: #4338ca;
+  --cal-brand-soft: #eef2ff;
+  --cal-s50: #f8fafc;
+  --cal-s100: #f1f5f9;
+  --cal-s200: #e2e8f0;
+  --cal-s400: #94a3b8;
+  --cal-s500: #64748b;
+  --cal-s700: #334155;
+  --cal-s900: #0f172a;
+  --cal-rose: #f43f5e;
+  --cal-amber-50: #fffbeb;
+  --cal-amber-100: #fef3c7;
+  --cal-amber-200: #fde68a;
+  --cal-amber-300: #fcd34d;
+  --cal-amber-900: #78350f;
+  --cal-radius: 12px;      /* cards + modal shells (= employees cards) */
+  --cal-radius-sm: 6px;    /* selects + small controls (= employees controls) */
+  --cal-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
+/* ---------- Card shell ---------- */
+.cal-card {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid var(--cal-s200);
+  border-radius: var(--cal-radius);
+  box-shadow: var(--cal-shadow);
+  overflow: hidden;
+  margin-bottom: 20px;
+  container: holcal / inline-size;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+/* ---------- Toolbar ---------- */
+.cal-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--cal-s200);
+  flex-shrink: 0;
+}
+
+.cal-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  background: var(--cal-s100);
+  border: 1px solid var(--cal-s200);
+  border-radius: 6px;   /* = employees .view-switcher-group */
+}
+.cal-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;   /* = employees .view-switcher-btn */
+  background: transparent;
+  color: var(--cal-s700);
+  font-size: 0.78rem;
+  font-weight: 600;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+.cal-nav-btn:hover,
+.cal-nav-btn:focus-visible {
+  background: #fff;
+  color: var(--cal-s900);
+  box-shadow: var(--cal-shadow);
+  outline: none;
+}
+.cal-nav-today { padding: 0 12px; }
+
+.cal-jump { display: flex; gap: 8px; }
+.cal-jump .form-select {
+  width: auto;
+  min-width: 96px;
+  border-color: var(--cal-s200);
+  border-radius: var(--cal-radius-sm);
+  background-color: var(--cal-s50);
+  color: var(--cal-s900);
+  font-weight: 700;
+  font-size: 0.8rem;
+  padding-top: 0.3rem;
+  padding-bottom: 0.3rem;
+}
+.cal-jump .form-select:focus {
+  border-color: var(--cal-brand);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.18);
+}
+
+/* ---------- Weekday header ---------- */
+.cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  padding: 10px 0;
+  background: var(--cal-s50);
+  border-bottom: 1px solid var(--cal-s200);
+  flex-shrink: 0;
+}
+.cal-weekdays span {
+  text-align: center;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cal-s500);
+}
+.cal-weekdays span:nth-child(n + 6) { color: var(--cal-rose); }
+
+/* ---------- Grid ---------- */
+.cal-grid {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  grid-template-rows: repeat(var(--week-rows, 6), minmax(var(--cal-row-min, 96px), auto));
+  gap: 1px;
+  background: var(--cal-s200);
+  transition: opacity 0.15s ease;
+}
+.cal-grid.is-loading { opacity: 0.55; pointer-events: none; }
+
+.cal-day {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px 8px;
+  background: #fff;
+  transition: background 0.12s;
+}
+
+/* Weekend columns (Sat/Sun) — pure CSS, no JS flag needed */
+.cal-grid > .cal-day:nth-child(7n + 6),
+.cal-grid > .cal-day:nth-child(7n) { background: var(--cal-s50); }
+.cal-grid > .cal-day:nth-child(7n + 6) .cal-day-num,
+.cal-grid > .cal-day:nth-child(7n) .cal-day-num { color: var(--cal-s400); }
+
+.cal-grid .cal-day.is-other-month { background: rgba(248, 250, 252, 0.6); }
+.cal-grid .cal-day.is-other-month .cal-day-num { color: #cbd5e1; }
+
+.cal-day.is-clickable { cursor: pointer; }
+.cal-grid .cal-day.is-clickable:has(.cal-holiday-pill) { background: var(--cal-amber-50); }
+.cal-grid .cal-day.is-clickable:hover { background: var(--cal-brand-soft); }
+
+.cal-day-num {
+  align-self: flex-start;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--cal-s700);
+}
+.cal-grid .cal-day.is-today {
+  background: rgba(238, 242, 255, 0.55);
+  box-shadow: inset 0 0 0 2px var(--cal-brand);
+}
+.cal-day.is-today .cal-day-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: var(--cal-brand);
+  color: #fff;
+}
+
+/* "+" new-leave-request button (current-month cells only). Revealed on
+   hover/focus on pointer devices, always visible on touch. */
+.cal-day-add {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cal-s400);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.cal-day-add svg { width: 12px; height: 12px; }
+.cal-day:hover .cal-day-add,
+.cal-day-add:focus-visible { opacity: 1; }
+.cal-day-add:hover,
+.cal-day-add:focus-visible {
+  background: var(--accent, var(--cal-brand));
+  color: #fff;
+  outline: none;
+}
+@media (hover: none) { .cal-day-add { opacity: 1; } }
+
+/* ---------- Holiday pill ---------- */
+.cal-holiday-pill {
+  display: block;
+  width: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--cal-amber-300);
+  border-radius: 6px;
+  background: var(--cal-amber-100);
+  color: var(--cal-amber-900);
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.cal-holiday-pill:hover:not(:disabled) { background: var(--cal-amber-200); }
+.cal-holiday-pill:disabled { cursor: default; }
+
+/* ---------- Leave pills (soft tint derived from --leave-color) ---------- */
+.cal-leave-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.cal-leave-pill {
+  --_c: var(--leave-color, var(--cal-brand));
+  display: block;
+  padding: 2px 6px;
+  border-left: 3px solid var(--_c);
+  border-radius: 5px;
+  background: var(--_c);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+.cal-leave-more {
+  display: block;
+  padding: 0 6px;
+  color: var(--cal-s500);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: default;
+}
+
+@supports (color: color-mix(in srgb, red 50%, blue)) {
+  .cal-leave-pill {
+    background: color-mix(in srgb, var(--_c) 13%, #fff);
+    color: color-mix(in srgb, var(--_c) 78%, #000);
+  }
+  .day-leave-type {
+    background: color-mix(in srgb, var(--leave-color, var(--cal-brand)) 14%, #fff);
+    color: color-mix(in srgb, var(--leave-color, var(--cal-brand)) 78%, #000);
+  }
+}
+
+/* ---------- Footer / legend ---------- */
+.cal-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 24px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--cal-s200);
+  background: var(--cal-s50);
+  flex-shrink: 0;
+}
+.cal-legend-static,
+.cal-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+}
+.cal-legend-static { padding-right: 24px; border-right: 1px solid var(--cal-s200); }
+.cal-legend:empty { display: none; }
+.cal-legend-static:has(+ .cal-legend:empty) { border-right: 0; padding-right: 0; }
+.cal-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--cal-s500);
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+.cal-legend-swatch {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.cal-legend-swatch.is-holiday { background: var(--cal-amber-300); border: 1px solid #f59e0b; }
+.cal-legend-swatch.is-today { background: var(--cal-brand); border-radius: 50%; }
+
+/* ---------- Shared component restyle (calendar page only) ---------- */
+/* Buttons: no calendar-only colour or radius any more — .btn-accent / .btn-ghost
+   use the shared styles.css theme (--accent), exactly as on the employees page.
+   Inside modals they get the same compact size + 0.4rem radius as the
+   employees page's #employeeModal / #lookupModal buttons. */
+body[data-page="calendar"] .modal .btn-ghost {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--cal-s500);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.22rem 0.6rem;
+  border-radius: 0.4rem;
+}
+body[data-page="calendar"] .modal .btn-ghost:hover { background: var(--cal-s200); color: var(--cal-s900); }
+body[data-page="calendar"] .modal .btn-accent,
+body[data-page="calendar"] .modal .btn-rose,
+body[data-page="calendar"] .modal .btn-danger,
+body[data-page="calendar"] .modal .btn-outline-danger {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.22rem 0.75rem;
+  border-radius: 0.4rem;
+  line-height: 1.5;
+}
+body[data-page="calendar"] .modal .btn-outline-secondary { font-size: 0.75rem; border-radius: 0.4rem; }
+/* Modal footers: every button (Delete / Cancel / Save) is one size, like employeeModal's footer. */
+body[data-page="calendar"] .modal-footer .btn { font-size: 0.75rem; line-height: 1.5; }
+body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
+
+.cal-dropdown {
+  padding: 6px;
+  border: 1px solid var(--cal-s200);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+  font-size: 0.85rem;
+}
+.cal-dropdown .dropdown-item { border-radius: 6px; padding: 7px 10px; font-weight: 500; }
+.cal-dropdown .dropdown-item .bi { color: var(--cal-brand); }
+.cal-dropdown .dropdown-item:hover { background: var(--cal-brand-soft); color: var(--cal-brand-dark); }
+
+/* ---------- Holiday + day-leave modals ---------- */
+#holidayModal .modal-content,
+#dayLeaveModal .modal-content {
+  border: 0;
+  border-radius: var(--cal-radius);
+  box-shadow: 0 25px 60px rgba(15, 23, 42, 0.25);
+  overflow: hidden;
+}
+#holidayModal .modal-header,
+#dayLeaveModal .modal-header,
+#holidayModal .modal-footer,
+#dayLeaveModal .modal-footer { border-color: var(--cal-s100); padding: 14px 20px; }
+#holidayModal .modal-title,
+#dayLeaveModal .modal-title {
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--cal-s900);
+}
+#holidayModal .modal-body { padding: 20px; }
+#holidayModal .form-label {
+  margin-bottom: 4px;
+  color: var(--cal-s500);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+#holidayModal .form-control {
+  border-color: var(--cal-s200);
+  border-radius: 0.38rem;
+  background: var(--cal-s50);
+}
+#holidayModal .form-control:focus {
+  border-color: var(--cal-brand);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.18);
+}
+
+.day-leave-dialog { max-width: 480px; }
+#dayLeaveModal .modal-body { max-height: 60vh; overflow-y: auto; padding: 12px 20px; }
+.day-leave-empty {
+  margin: 0;
+  padding: 18px 0;
+  text-align: center;
+  color: var(--cal-s400);
+  font-size: 0.85rem;
+}
+.day-leave-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 -8px;
+  padding: 9px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.day-leave-item:hover { background: var(--cal-brand-soft); }
+.day-leave-item + .day-leave-item { border-top: 1px solid var(--cal-s100); }
+.day-leave-main { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 auto; }
+.day-leave-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--cal-s900);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+.day-leave-type {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--leave-color, var(--cal-brand));
+  color: #fff;
+  font-size: 0.64rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.day-leave-meta {
+  flex: 0 1 auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--cal-s500);
+  font-size: 0.72rem;
+}
+.day-leave-chevron { flex-shrink: 0; color: var(--cal-s400); font-size: 1rem; }
+
+/* ---------- Compact layout when the card itself is narrow ---------- */
+@container holcal (max-width: 560px) {
+  .cal-toolbar { padding: 10px; gap: 8px; }
+  .cal-jump { flex: 1 1 auto; }
+  .cal-jump .form-select { flex: 1 1 0; min-width: 0; font-size: 0.82rem; }
+  .cal-weekdays span { font-size: 0.6rem; letter-spacing: 0.04em; }
+  .cal-day { padding: 3px 4px; gap: 2px; }
+  .cal-day-num { font-size: 0.64rem; }
+  .cal-day.is-today .cal-day-num { width: 18px; height: 18px; margin: -1px 0 0 -1px; }
+  .cal-holiday-pill { font-size: 0.56rem; padding: 1px 4px; }
+  .cal-leave-pill { font-size: 0.54rem; padding: 1px 4px; border-left-width: 2px; }
+  .cal-leave-more { font-size: 0.56rem; }
+  .cal-day-add { width: 14px; height: 14px; top: 2px; right: 2px; }
+  .cal-day-add svg { width: 9px; height: 9px; }
+  .cal-footer { padding: 8px 10px; gap: 4px 12px; }
+  .cal-legend-static { padding-right: 12px; }
+  .cal-legend-item { font-size: 0.66rem; }
+}
+
+/* ---------- Grid / List view toggle ---------- */
+.cal-nav-btn.is-active {
+  background: #fff;
+  color: var(--cal-s900);   /* = employees .view-switcher-btn.is-active */
+  box-shadow: var(--cal-shadow);
+}
+
+/* ---------- List (agenda) view — see renderList() in calendar.js ----------
+   Row = date block | stack of items. Each item is one line:
+   dot + PRIMARY (name / holiday) ........ secondary (type · duration / remark) */
+.cal-list,
+.cal-holidays {
+  flex: 1 1 auto;
+  transition: opacity 0.15s ease;
+}
+.cal-list.is-loading,
+.cal-holidays.is-loading { opacity: 0.55; pointer-events: none; }
+
+.cal-list-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 5px 14px;
+  border-bottom: 1px solid var(--cal-s100);
+  transition: background 0.12s;
+}
+.cal-list-row:last-child { border-bottom: 0; }
+.cal-list-row:hover { background: var(--cal-s50); }
+.cal-list-row.is-today { background: rgba(238, 242, 255, 0.55); box-shadow: inset 3px 0 0 var(--cal-brand); }
+
+.cal-list-date {
+  flex: 0 0 34px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 2px;
+  line-height: 1.1;
+}
+.cal-list-daynum { font-size: 0.95rem; font-weight: 800; color: var(--cal-s900); }
+.cal-list-dow {
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cal-s400);
+}
+.cal-list-row.is-today .cal-list-daynum { color: var(--cal-brand); }
+
+.cal-list-items { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+
+.cal-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 3px 6px;
+  margin: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.cal-list-item:hover:not(:disabled) { background: var(--cal-brand-soft); }
+.cal-list-item:disabled { cursor: default; }
+.cal-list-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dot, var(--cal-brand));
+}
+.cal-list-primary {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--cal-s900);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+.cal-list-secondary {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--cal-s500);
+  font-size: 0.66rem;
+  font-weight: 500;
+}
+.cal-list-secondary::before { content: "\00b7"; margin-right: 8px; color: var(--cal-s400); }
+
+.cal-list-add { position: static; opacity: 0; flex-shrink: 0; margin-top: 3px; width: 18px; height: 18px; }
+.cal-list-row:hover .cal-list-add,
+.cal-list-add:focus-visible { opacity: 1; }
+@media (hover: none) { .cal-list-add { opacity: 1; } }
+
+.cal-list-empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--cal-s400);
+  font-size: 0.78rem;
+}
+
+/* ---------- Holidays (year) view — see renderHolidayList() in calendar.js ---------- */
+.cal-hol-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--cal-s100);
+  background: var(--cal-s50);
+}
+.cal-hol-head h2 { margin: 0; font-size: 0.8rem; font-weight: 800; color: var(--cal-s900); }
+.cal-hol-count {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--cal-amber-100);
+  color: var(--cal-amber-900);
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+.cal-hol-scroll { overflow-x: auto; }
+.cal-hol-table { width: 100%; border-collapse: collapse; font-size: 0.74rem; color: var(--cal-s700); }
+.cal-hol-table th {
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--cal-s200);
+  background: #fff;
+  color: var(--cal-s500);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: left;
+  white-space: nowrap;
+}
+.cal-hol-table th.text-end { text-align: right; }
+.cal-hol-table td { padding: 6px 14px; border-bottom: 1px solid var(--cal-s100); vertical-align: middle; }
+.cal-hol-table tbody tr:last-child td { border-bottom: 0; }
+.cal-hol-table tbody tr:hover { background: var(--cal-s50); }
+.cal-hol-table .cal-hol-date { font-weight: 700; color: var(--cal-s900); white-space: nowrap; }
+.cal-hol-table .cal-hol-desc { font-weight: 600; color: var(--cal-amber-900); }
+.cal-hol-table tr.is-past td { opacity: 0.55; }
+.cal-hol-table tr.is-today { box-shadow: inset 3px 0 0 var(--cal-brand); background: rgba(238, 242, 255, 0.55); }
+
+@container holcal (max-width: 560px) {
+  .cal-hol-head { padding: 10px; }
+  .cal-hol-table th, .cal-hol-table td { padding: 5px 8px; font-size: 0.68rem; }
+}

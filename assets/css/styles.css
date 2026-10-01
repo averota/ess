@@ -1,0 +1,1157 @@
+/* =====================================================================
+   ESS — Employee Self-Service · SHARED styles (load on every page)
+   Design tokens, base typography, form/button skins, app shell +
+   sidebar, and components used by two or more pages (stat cards, table
+   card/toolbar, data table, filter dropdowns, upload picker, overlay
+   dialogs, toasts, lookup-manage list, status badge base).
+
+   Page-specific rules live next to the page, loaded AFTER this file:
+     auth.css       login screen           (index / login page)
+     dashboard.css  dashboard card         (dashboard.html)
+     employees.css  employee directory     (employees.html)
+     leaves.css     leave requests         (leaves.html)
+     policies.css   policy settings        (policies.html)
+     calendar.css   holiday/leave calendar (calendar.html)
+   Rule of thumb: used by 2+ pages -> here; otherwise -> the page file.
+
+   Palette: cool ink + deep teal accent
+   Type: Space Grotesk for headings/brand, Inter for body & UI
+   ===================================================================== */
+
+:root {
+  --ink:            #1B2430;
+  --ink-soft:       #4B5563;
+  --ink-faint:      #8A93A0;
+  --bg:             #F3F5F7;
+  --surface:        #FFFFFF;
+  --border:         #DDE3E8;
+  --border-strong:  #C4CDD5;
+
+  --accent:         #2F5D62;
+  --accent-dark:    #20393C;
+  --accent-soft:    #E2EDEC;
+
+  --danger:         #B0503D;
+  --danger-soft:    #F7E7E2;
+
+  --success:        #2F7A5C;
+  --success-soft:   #E1F0E7;
+
+  --info:           #34608A;
+  --info-soft:      #E3EDF3;
+
+  --warning:        #A6791B;
+  --warning-soft:   #F6EFDB;
+
+  --amber:          #B07A2F;   /* .btn-amber / .num-amber */
+
+  --violet:         #6C5B96;
+  --violet-soft:    #ECE8F4;
+
+  --font-display: 'Space Grotesk', 'Segoe UI', sans-serif;
+  --font-body:    'Inter', 'Segoe UI', sans-serif;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --shadow-card: 0 1px 2px rgba(27, 36, 48, 0.06), 0 1px 0 rgba(27, 36, 48, 0.04);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+h1, h2, h3, h4, h5, .brand, .font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+a { color: var(--accent); }
+a:hover { color: var(--accent-dark); }
+
+.form-label {
+  font-weight: 600;
+  font-size: 0.86rem;
+  color: var(--ink-soft);
+}
+
+.form-control {
+  border-color: var(--border-strong);
+  padding: 10px 12px;
+  font-size: 0.95rem;
+}
+.form-control:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.btn-accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-accent:hover, .btn-accent:focus {
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
+  color: #fff;
+}
+.btn-accent:disabled {
+  background: var(--accent);
+  opacity: 0.6;
+}
+
+.btn-outline-accent {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+  background: transparent;
+}
+.btn-outline-accent:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ---------------------------------------------------------------- */
+/* App shell — shared by every page under /pages/.                   */
+/* Structure (see assets/partials/sidebar.html + assets/js/sidebar.js */
+/* for how it's assembled):                                          */
+/*   .app-shell (flex row)                                           */
+/*     .app-main (flex column, grows)                                */
+/*       .page-topbar  — page title + page actions                   */
+/*       .page-content — actual page content                         */
+/*     .app-sidebar (left; icon rail <-> full width; brand = toggle) */
+/* ---------------------------------------------------------------- */
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  align-items: stretch;
+}
+
+.app-main {
+  flex: 1 1 auto;
+  min-width: 0; /* let flex children shrink instead of overflowing */
+  display: flex;
+  flex-direction: column;
+}
+
+.page-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 1020;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+}
+
+.page-title {
+  font-size: 1.15rem;
+  margin: 0;
+}
+
+.page-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.page-content {
+  flex: 1 1 auto;
+}
+
+/* Left sidebar: always visible. Collapsed = icon rail (logo, nav icons,
+   user avatar); open = full width with text labels. Only the width
+   animates, so page content is pushed, never covered. Inner content keeps
+   a fixed width so it doesn't reflow mid-transition — the parent's
+   overflow:hidden clips the labels while collapsed.
+   height: 100vh + position: sticky keeps the sidebar pinned to exactly the
+   viewport height on every page, regardless of how tall the content is. */
+.app-shell {
+  --sidebar-w-collapsed: 72px;
+  --sidebar-w-open: 260px;
+}
+
+/* Remembered "expanded" state, applied from a tiny inline script in each
+   page's <head> BEFORE first paint (sidebar.js runs at the end of <body>,
+   too late to avoid a collapsed -> expanded jump). Pre-sizes the sidebar
+   by overriding the collapsed width; sidebar.js removes the class as soon
+   as it has set the real .sidebar-open state. */
+html.sidebar-open-init .app-shell {
+  --sidebar-w-collapsed: var(--sidebar-w-open);
+}
+
+/* Placeholder that reserves the sidebar's space while the page is still
+   being parsed (the <aside> comes after the content in the markup), so
+   the content doesn't shift sideways when the sidebar appears. Hidden as
+   soon as the real sidebar exists. */
+.app-shell::before {
+  content: '';
+  order: -1;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  height: 100dvh;
+  flex: 0 0 var(--sidebar-w-collapsed);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+.app-shell:has(> .app-sidebar)::before {
+  display: none;
+}
+
+.app-sidebar {
+  order: -1; /* visually left, regardless of DOM/markup order */
+  position: sticky;
+  top: 0;
+  align-self: flex-start; /* don't let .app-shell's align-items: stretch override height: 100vh */
+  height: 100vh;
+  height: 100dvh; /* actual visible height, so the footer avatar is never cut off */
+  width: var(--sidebar-w-collapsed);
+  flex-shrink: 0;
+  overflow: hidden;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  transition: width 0.22s ease;
+}
+.app-shell.sidebar-open .app-sidebar {
+  width: var(--sidebar-w-open);
+}
+
+.sidebar-inner {
+  width: var(--sidebar-w-open);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Brand row = the toggle. Height matches .page-topbar so the two
+   bottom borders line up into one continuous line. Logo stays at a fixed
+   x-position in both states (16px padding + 40px logo = the 72px rail). */
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 64px;
+  padding: 0 16px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+.sidebar-brand:hover {
+  background: var(--bg);
+}
+.sidebar-brand:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.sidebar-logo {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.sidebar-logo svg {
+  width: 22px;
+  height: 22px;
+}
+.sidebar-brand-text {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.98rem;
+  line-height: 1.15;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: opacity 0.15s ease;
+}
+
+/* Text that disappears when the sidebar is collapsed. */
+.sidebar-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: opacity 0.15s ease;
+}
+.app-shell:not(.sidebar-open) .sidebar-label,
+.app-shell:not(.sidebar-open) .sidebar-brand-text {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 auto;
+  padding: 16px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* 40px-wide hit area when collapsed (72px rail - 2 x 16px padding):
+   11px + 18px icon + 11px = 40px, so the icon never shifts on toggle. */
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 11px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-soft);
+  font-weight: 500;
+  font-size: 0.92rem;
+  text-decoration: none;
+}
+.sidebar-link svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.sidebar-link:hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+.sidebar-link.is-active {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-weight: 600;
+}
+.sidebar-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.sidebar-footer {
+  border-top: 1px solid var(--border);
+  padding: 12px 16px;
+  flex-shrink: 0;
+}
+
+/* User row: laid out like a nav link so nothing moves when the sidebar
+   toggles. Fixed 40px height and 2px padding in both states, so the 36px
+   avatar always sits at the same x/y (16px footer padding + 2px = the
+   same centre line as the nav icons). No card background or border; it
+   only shades on hover, like the nav buttons. Expanded: avatar, bold name,
+   position (Admin), sign-out icon. Collapsed: just the 40px avatar. */
+.sidebar-user-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s ease;
+}
+.sidebar-user-card:hover {
+  background: var(--bg);
+}
+.sidebar-avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+  /* it's a <button> (opens the account menu when collapsed): reset chrome */
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: default;
+}
+.app-shell:not(.sidebar-open) .sidebar-avatar-wrap {
+  cursor: pointer;
+}
+.sidebar-avatar-wrap:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.sidebar-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.sidebar-avatar-dot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+.sidebar-user {
+  flex: 1 1 auto;
+  min-width: 0;   /* lets the text truncate instead of pushing the button out */
+}
+.sidebar-user-name,
+.sidebar-user-role {
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar-user-name {
+  font-weight: 700;
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+.sidebar-user-role {
+  font-size: 0.72rem;
+  color: var(--accent);
+}
+.sidebar-signout-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.sidebar-signout-btn svg {
+  width: 18px;
+  height: 18px;
+}
+.sidebar-signout-btn:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.sidebar-signout-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* First paint only (set/removed by sidebar.js): no transitions, so a
+   remembered "expanded" state appears instantly instead of animating open
+   on every page load. */
+.app-shell.sidebar-no-anim,
+.app-shell.sidebar-no-anim * {
+  transition: none !important;
+}
+
+/* Cross-page transition. Every page is a full page load; this lets the
+   browser hold the old page until the new one is ready, keep the sidebar
+   and top bar as their own layers (so they stay put instead of blinking),
+   and cross-fade only what changed. Browsers without support (e.g.
+   Firefox for now) just navigate normally. */
+@view-transition {
+  navigation: auto;
+}
+.app-sidebar {
+  view-transition-name: app-sidebar;
+}
+.page-topbar {
+  view-transition-name: app-topbar;
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 0.14s;
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
+/* Collapsed: .sidebar-inner keeps its full open width (so text doesn't
+   reflow mid-animation), which means the nav/footer are wider than the
+   visible rail. Pin the interactive elements to the rail's content width
+   (72px - 2 x 16px padding = 40px) so hover/active shading fits it. */
+.app-shell:not(.sidebar-open) .sidebar-link {
+  width: 40px;
+}
+
+/* Collapsed footer: just the avatar, in the same spot as when expanded. */
+.app-shell:not(.sidebar-open) .sidebar-user-card {
+  width: 40px;
+}
+.app-shell:not(.sidebar-open) .sidebar-user,
+.app-shell:not(.sidebar-open) .sidebar-signout-btn {
+  display: none;
+}
+
+/* Account menu shown when the avatar is clicked on the collapsed rail.
+   Lives on <body> (position: fixed; left/bottom set from JS) so the
+   sidebar's overflow: hidden can't clip it. */
+.sidebar-user-menu {
+  position: fixed;
+  z-index: 1080;
+  min-width: 200px;
+  max-width: 280px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(27, 36, 48, 0.16);
+}
+.sidebar-user-menu[hidden] {
+  display: none;
+}
+.sidebar-user-menu-info {
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+.sidebar-user-menu-name,
+.sidebar-user-menu-role {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-user-menu-name {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+.sidebar-user-menu-role {
+  font-size: 0.75rem;
+  color: var(--accent);
+}
+.sidebar-user-menu-signout {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.sidebar-user-menu-signout svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.sidebar-user-menu-signout:hover,
+.sidebar-user-menu-signout:focus-visible {
+  background: var(--danger-soft);
+  color: var(--danger);
+  outline: none;
+}
+
+/* ---------------------------------------------------------------- */
+/* Data-table pages (Employees, Leaves, Calendar, future list pages) */
+/* ---------------------------------------------------------------- */
+.page-wrap {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.hidden { display: none !important; }
+
+.meta-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.meta-bar h2 {
+  font-size: 1.4rem;
+  margin: 0 0 4px;
+}
+.meta-bar .meta {
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  margin: 0;
+}
+
+.btn-ghost {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+.btn-ghost:hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Refresh button (employees + leaves): spins the icon and swaps the label
+   to "Refreshing…" while the reload is in flight, so it's clear something
+   is happening even though it usually resolves quickly. */
+#refreshListBtn.is-refreshing {
+  cursor: wait;
+}
+#refreshListBtn.is-refreshing svg {
+  animation: spin-refresh 0.7s linear infinite;
+}
+@keyframes spin-refresh {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.btn-icon-only {
+  border: none;
+  background: transparent;
+  color: var(--ink-faint);
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.btn-icon-only:hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+.btn-icon-only svg {
+  width: 16px;
+  height: 16px;
+}
+
+.dropdown-menu .dropdown-item svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.btn-emerald {
+  background: var(--success);
+  border-color: var(--success);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-emerald:hover { filter: brightness(0.92); color: #fff; }
+
+.btn-amber {
+  background: var(--amber);
+  border-color: var(--amber);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-amber:hover { filter: brightness(0.92); color: #fff; }
+
+.btn-rose {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-rose:hover { filter: brightness(0.92); color: #fff; }
+
+/* Panels: inline error/status banners */
+.panel {
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-size: 0.88rem;
+  margin-bottom: 16px;
+}
+.panel-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.panel-status {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+}
+.num-emerald { color: var(--success); font-weight: 600; }
+.num-amber   { color: var(--amber); font-weight: 600; }
+.num-rose    { color: var(--danger); font-weight: 600; }
+
+.empty-state {
+  text-align: center;
+  color: var(--ink-faint);
+  padding: 32px 16px;
+  font-size: 0.92rem;
+}
+
+/* Stat cards row (headcount, female headcount, etc.) — compact, so the
+   row reads as a quick-glance strip rather than dominating the page. */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.stat-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  padding: 10px 12px;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.stat-card:hover {
+  box-shadow: 0 4px 12px rgba(27, 36, 48, 0.09);
+  transform: translateY(-1px);
+}
+.stat-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.stat-card-icon {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+}
+.stat-card-icon svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+/* Color variants — pick a distinct, muted accent per stat so the row
+   reads at a glance instead of blurring into one color. */
+.stat-card--accent  { border-left-color: var(--accent); }
+.stat-card--accent  .stat-card-icon { background: var(--accent-soft);  color: var(--accent-dark); }
+
+.stat-card--violet  { border-left-color: var(--violet); }
+.stat-card--violet  .stat-card-icon { background: var(--violet-soft);  color: var(--violet); }
+
+.stat-card--info    { border-left-color: var(--info); }
+.stat-card--info    .stat-card-icon { background: var(--info-soft);    color: var(--info); }
+
+.stat-card--success { border-left-color: var(--success); }
+.stat-card--success .stat-card-icon { background: var(--success-soft); color: var(--success); }
+
+.stat-card--warning { border-left-color: var(--warning); }
+.stat-card--warning .stat-card-icon { background: var(--warning-soft); color: var(--warning); }
+
+.stat-card-label {
+  font-size: 0.68rem;
+  color: var(--ink-soft);
+  letter-spacing: 0.01em;
+  font-weight: 600;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stat-card-value {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  line-height: 1.15;
+}
+.stat-card-value.is-loading {
+  color: var(--ink-faint);
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+/* Generic manage/table card */
+.room-manage-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.table-card { margin-bottom: 20px; }
+
+#filtersCollapse {
+  margin-top: 5px;
+}
+
+/* Checkbox multi-select filter dropdowns (employees + leaves). Positioned via a "fixed" Popper strategy in JS
+   (see initFilterDropdowns() in employees.js) so the open menu floats
+   above the table instead of being clipped by .room-manage-card's
+   `overflow: hidden` when the filtered table is short. */
+.filter-multiselect-menu {
+  min-width: 240px;
+  max-width: 320px;
+  padding: 0;
+}
+.filter-multiselect-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-faint);
+  border-bottom: 1px solid var(--border);
+}
+.filter-multiselect-header .btn-link-clear {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--accent);
+  cursor: pointer;
+}
+.filter-multiselect-header .btn-link-clear:hover {
+  text-decoration: underline;
+  color: var(--accent-dark);
+}
+.filter-multiselect-list {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 6px 4px;
+}
+.filter-multiselect-list .form-check {
+  padding-left: 1.75rem;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  margin: 0;
+  border-radius: var(--radius-sm);
+}
+.filter-multiselect-list .form-check:hover {
+  background: var(--bg);
+}
+.filter-multiselect-list .form-check-label {
+  font-size: 0.85rem;
+  width: 100%;
+  cursor: pointer;
+}
+.filter-multiselect-list .form-check-input {
+  cursor: pointer;
+}
+.filter-multiselect-list .form-check-input:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+.filter-multiselect-empty {
+  padding: 10px 12px;
+  font-size: 0.8rem;
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+/* Filter dropdown toggles (Department / Business unit / Leave type ...)
+   pick up an accent outline once a selection is active — set by each
+   page's JS via .active-filter, so no per-button id rules are needed. */
+.btn.dropdown-toggle.active-filter {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+  background: var(--accent-soft);
+}
+
+/* "Clear filters" button: resets every filter in one click; disabled
+   (and visually muted) whenever no filter is currently active. */
+#clearAllFiltersBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+#clearAllFiltersBtn:disabled:hover {
+  background: var(--surface);
+  color: var(--ink-soft);
+}
+
+.table-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.file-meta {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+.data-table thead th {
+  text-align: left;
+  background: var(--bg);
+  color: var(--ink-soft);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+}
+.data-table tbody td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--ink);
+  vertical-align: middle;
+}
+.data-table tbody tr:last-child td { border-bottom: none; }
+.data-table tbody tr:hover { background: var(--bg); }
+.data-table .idx-col { width: 40px; color: var(--ink-faint); }
+.data-table .actions-col { width: 90px; }
+.actions-wrap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+/* Upload panel */
+.upload-hint {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 0.85rem;
+}
+
+.file-picker {
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 28px 16px;
+  text-align: center;
+  background: var(--bg);
+}
+.file-picker label {
+  cursor: pointer;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.file-picker svg {
+  width: 28px;
+  height: 28px;
+  color: var(--ink-faint);
+}
+.file-picker .primary {
+  font-weight: 600;
+  color: var(--ink);
+}
+.file-picker .secondary {
+  font-size: 0.82rem;
+  color: var(--ink-faint);
+}
+.file-picker.compact {
+  padding: 14px 16px;
+}
+.file-picker.compact .secondary { display: none; }
+
+.stat-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+}
+.stat-item {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stat-value {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  color: var(--ink);
+}
+
+.btn-group-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Small overlay dialogs (edit-row / confirm / prompt) */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(27, 36, 48, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1080;
+  padding: 16px;
+}
+.modal-box {
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  padding: 22px;
+  max-width: 420px;
+  width: 100%;
+  box-shadow: 0 12px 32px rgba(27, 36, 48, 0.22);
+}
+.modal-box h3 {
+  font-size: 1.1rem;
+  margin-bottom: 14px;
+}
+.modal-box p {
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  margin-bottom: 16px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+.req-text { color: var(--danger); }
+
+/* Toasts */
+.toast-stack {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1090;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.toast-item {
+  background: var(--ink);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  padding: 10px 16px;
+  font-size: 0.86rem;
+  box-shadow: 0 6px 18px rgba(27, 36, 48, 0.25);
+  max-width: 320px;
+}
+.toast-item.is-success { background: var(--success); }
+.toast-item.is-danger  { background: var(--danger); }
+
+.lookup-manage-list {
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.lookup-manage-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.lookup-manage-row:last-child {
+  border-bottom: none;
+}
+.lookup-manage-row.is-disabled .lookup-manage-name {
+  color: var(--ink-faint);
+}
+.lookup-manage-name {
+  flex: 1;
+  font-size: 0.86rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lookup-manage-row-actions {
+  display: flex;
+  gap: 2px;
+}
+.lookup-manage-empty {
+  padding: 16px 10px;
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 0.85rem;
+}
+
+.danger-zone {
+  border: 1px solid var(--danger-soft);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  margin-top: 20px;
+}
+.danger-zone h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--danger);
+  font-size: 1rem;
+  margin-bottom: 6px;
+}
+.danger-zone h3 svg { width: 18px; height: 18px; }
+.danger-zone p {
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  margin-bottom: 12px;
+}

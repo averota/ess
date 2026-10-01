@@ -1,0 +1,503 @@
+/* =====================================================================
+   ESS — Dashboard page. Load AFTER styles.css on dashboard.html only.
+   Uses the shared tokens from styles.css (--accent, --surface, ...) and
+   the shared .stats-grid / .stat-card / .status-badge / .empty-state /
+   .panel components (.stat-card is restyled for #dashBalanceGrid below). Everything here is prefixed "dash-".
+   ===================================================================== */
+
+/* ---- Hero ---------------------------------------------------------- */
+.dash-hero {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-bottom: 20px;
+  padding: 24px 28px;
+  border-radius: var(--radius-md);
+  color: #fff;
+  background: linear-gradient(120deg, var(--accent-dark) 0%, var(--accent) 100%);
+  box-shadow: var(--shadow-card);
+}
+.dash-hero::after {
+  content: "";
+  position: absolute;
+  right: -60px;
+  bottom: -90px;
+  width: 260px;
+  height: 260px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+}
+.dash-hero > * { position: relative; z-index: 1; }
+
+.dash-hero-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.dash-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+.dash-hero-badge--mono {
+  font-variant-numeric: tabular-nums;
+  background: rgba(0, 0, 0, 0.22);
+  color: rgba(255, 255, 255, 0.85);
+}
+.dash-hero h2 {
+  font-size: 1.5rem;
+  margin: 0 0 4px;
+  color: #fff;
+}
+.dash-hero p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.78);
+}
+.dash-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.dash-hero-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+  font-size: 0.86rem;
+}
+.dash-hero-actions .btn svg {
+  width: 16px;
+  height: 16px;
+}
+.dash-btn-light {
+  background: #fff;
+  border-color: #fff;
+  color: var(--accent-dark);
+}
+.dash-btn-light:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft);
+  color: var(--accent-dark);
+}
+.dash-btn-outline {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.55);
+  color: #fff;
+}
+.dash-btn-outline:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: #fff;
+  color: #fff;
+}
+
+/* ---- Section headings --------------------------------------------- */
+.dash-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0 12px;
+}
+.dash-section-title h3 {
+  font-size: 1rem;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dash-section-title h3 svg {
+  width: 17px;
+  height: 17px;
+  color: var(--accent);
+}
+.dash-section-title .meta {
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+}
+
+/* ---- My leave summary cards (Annual / Sick / Special balance + My upcoming
+   approved) — rendered into #dashBalanceGrid by loadAll() in dashboard.js.
+   Scoped under the id so they win over the shared .stat-card rules used by
+   the Quick stats row above. ------------------------------------------- */
+#dashBalanceGrid.stats-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.65rem;
+  margin-bottom: 1.5rem;
+}
+#dashBalanceGrid > .empty-state { grid-column: 1 / -1; }
+
+#dashBalanceGrid .stat-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 0.7rem 0.85rem 0.7rem 1.05rem;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  overflow: hidden;
+  justify-content: space-between;
+  min-height: 96px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  cursor: default;
+}
+#dashBalanceGrid .stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.07);
+  border-color: #cbd5e1;
+}
+
+/* Colour accent bar (left edge) */
+#dashBalanceGrid .stat-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 4px;
+  background: #cbd5e1;
+  border-radius: 12px 0 0 12px;
+}
+#dashBalanceGrid .stat-card--accent::before  { background: linear-gradient(180deg, #2563eb, #38bdf8); }
+#dashBalanceGrid .stat-card--violet::before  { background: linear-gradient(180deg, #7c3aed, #a855f7); }
+#dashBalanceGrid .stat-card--success::before { background: linear-gradient(180deg, #059669, #34d399); }
+#dashBalanceGrid .stat-card--warning::before { background: linear-gradient(180deg, #d97706, #fbbf24); }
+
+#dashBalanceGrid .stat-card-top { margin-bottom: 0.25rem; }
+#dashBalanceGrid .stat-card-label {
+  font-size: 0.69rem;
+  font-weight: 700;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+#dashBalanceGrid .stat-card-icon {
+  width: 26px;
+  height: 26px;
+  background: #f8fafc;
+  color: #64748b;
+  border: 1px solid #f1f5f9;
+}
+#dashBalanceGrid .stat-card-icon svg { width: 14px; height: 14px; }
+#dashBalanceGrid .stat-card--accent  .stat-card-icon { background: #eff6ff; color: #2563eb; border-color: #dbeafe; }
+#dashBalanceGrid .stat-card--violet  .stat-card-icon { background: #f5f3ff; color: #7c3aed; border-color: #ede9fe; }
+#dashBalanceGrid .stat-card--success .stat-card-icon { background: #ecfdf5; color: #059669; border-color: #d1fae5; }
+#dashBalanceGrid .stat-card--warning .stat-card-icon { background: #fffbeb; color: #d97706; border-color: #fef3c7; }
+
+#dashBalanceGrid .stat-card-body {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin: 0.15rem 0 0.35rem;
+}
+#dashBalanceGrid .stat-card-value {
+  font-size: 1.45rem;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+#dashBalanceGrid .stat-card-unit {
+  font-size: 0.71rem;
+  font-weight: 600;
+  color: #64748b;
+}
+#dashBalanceGrid .stat-card-sub {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #334155;
+  background: #f8fafc;
+  padding: 0.22rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid #f1f5f9;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- Widget cards -------------------------------------------------- */
+.dash-card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.dash-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.dash-card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.dash-card-icon {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+}
+.dash-card-icon svg { width: 16px; height: 16px; }
+.dash-card-icon--warning { background: var(--warning-soft); color: var(--warning); }
+.dash-card-icon--info    { background: var(--info-soft);    color: var(--info); }
+.dash-card-icon--success { background: var(--success-soft); color: var(--success); }
+
+.dash-card-title h4 {
+  font-size: 0.95rem;
+  margin: 0;
+}
+.dash-card-title small {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+}
+.dash-count {
+  flex-shrink: 0;
+  min-width: 26px;
+  text-align: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.dash-date-chip {
+  flex-shrink: 0;
+  font-size: 0.76rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--info);
+}
+.dash-card-body {
+  flex: 1 1 auto;
+  padding: 6px 16px;
+}
+.dash-card-foot {
+  padding: 12px 16px 16px;
+}
+.dash-card-foot .btn {
+  width: 100%;
+  font-size: 0.82rem;
+}
+
+/* ---- List rows ----------------------------------------------------- */
+.dash-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.dash-list-item:last-child { border-bottom: none; }
+.dash-list-main { min-width: 0; }
+.dash-list-name {
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-list-sub {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+}
+.dash-list-sub--accent { color: var(--accent); font-weight: 600; }
+.dash-list-meta {
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 0.76rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.dash-badge-now  { background: var(--success-soft); color: var(--success); }
+.dash-badge-soon { background: var(--info-soft);    color: var(--info); }
+.dash-list-meta .status-badge {
+  margin-top: 3px;
+  padding: 1px 8px;
+  font-size: 0.68rem;
+}
+
+/* ---- Policies widget ---------------------------------------------- */
+.dash-policy-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-size: 0.82rem;
+}
+.dash-policy-row span { color: var(--ink-soft); }
+.dash-policy-row strong { color: var(--ink); }
+
+.dash-mini-label {
+  display: block;
+  margin: 14px 0 6px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.dash-week {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  text-align: center;
+  font-size: 0.68rem;
+}
+.dash-week > div {
+  padding: 5px 0;
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--ink-faint);
+}
+.dash-week > div.is-working {
+  background: var(--success-soft);
+  color: var(--success);
+  font-weight: 700;
+}
+.dash-week > div.is-half {
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-weight: 700;
+}
+.dash-week b {
+  display: block;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-holiday {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid #ecdfb8;
+  background: var(--warning-soft);
+  font-size: 0.78rem;
+}
+.dash-holiday:last-child { margin-bottom: 0; }
+.dash-holiday p { margin: 0; }
+.dash-holiday-name { font-weight: 700; color: #6b4e0f; }
+.dash-holiday-remark { font-size: 0.72rem; color: var(--warning); }
+.dash-holiday-date {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 5px;
+  background: #fff;
+  border: 1px solid #ecdfb8;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #6b4e0f;
+}
+
+.dash-card .empty-state {
+  padding: 20px 8px;
+  font-size: 0.82rem;
+}
+
+@media (max-width: 575.98px) {
+  .dash-hero { padding: 20px; }
+  .dash-hero h2 { font-size: 1.25rem; }
+  .dash-hero-actions { width: 100%; }
+  .dash-hero-actions .btn { flex: 1 1 auto; justify-content: center; }
+}
+
+/* ---- Clickable list rows (open the Leave details modal) ------------ */
+.dash-list-item.is-clickable {
+  margin: 0 -16px;              /* stretch the hover background to the card edges */
+  padding-left: 16px;
+  padding-right: 16px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.dash-list-item.is-clickable:hover { background: var(--bg); }
+.dash-list-item.is-clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--bg);
+}
+
+/* ---- Action menu in the Leave details footer ("More") --------------
+   Same rules as leaves.css (.row-actions-menu); copied here so the
+   dashboard doesn't have to load the whole Leaves stylesheet. ---------- */
+.row-actions-menu {
+  min-width: 170px;
+  padding: 4px;
+  font-size: 0.84rem;
+  border-color: var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 6px 20px rgba(27, 36, 48, 0.12);
+}
+.row-actions-menu .dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 4px;
+  color: var(--ink-soft);
+  font-weight: 500;
+}
+.row-actions-menu .dropdown-item svg { width: 13px; height: 13px; }
+.row-actions-menu .dropdown-item:hover,
+.row-actions-menu .dropdown-item:focus,
+.row-actions-menu .dropdown-item:active { background: var(--bg); color: var(--ink); }
+.row-actions-menu .dropdown-item.is-success { color: var(--success); }
+.row-actions-menu .dropdown-item.is-success:hover,
+.row-actions-menu .dropdown-item.is-success:focus,
+.row-actions-menu .dropdown-item.is-success:active { background: var(--success-soft); color: var(--success); }
+.row-actions-menu .dropdown-item.is-danger { color: var(--danger); }
+.row-actions-menu .dropdown-item.is-danger:hover,
+.row-actions-menu .dropdown-item.is-danger:focus,
+.row-actions-menu .dropdown-item.is-danger:active { background: var(--danger-soft); color: var(--danger); }
+.row-actions-menu .dropdown-divider { margin: 4px 0; border-color: var(--border); }
+
+/* Hero "Request Leave" is a <button> (opens the request modal) */
+.dash-btn-light:disabled {
+  background: #fff;
+  border-color: #fff;
+  color: var(--accent-dark);
+  opacity: 0.6;
+  cursor: not-allowed;
+}

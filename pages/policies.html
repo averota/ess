@@ -1,0 +1,794 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Policies · ESS</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="../assets/css/styles.css" rel="stylesheet">
+<link href="../assets/css/policies.css" rel="stylesheet">
+<!-- ESS sidebar: apply the remembered open/collapsed state before first paint (see styles.css .sidebar-open-init) -->
+<script>try{if(localStorage.getItem('ess.sidebar.open')==='1')document.documentElement.classList.add('sidebar-open-init')}catch(e){}</script>
+</head>
+<body data-page="policies">
+
+<!--
+  HOW THIS PAGE IS ORGANISED — add new policies without restructuring:
+
+  Tab      A category of policies. Add a <button role="tab"> to #policyTabs
+           and a matching <div class="tab-pane"> to #policyPanes.
+  Section  One policy inside a tab. Copy any .policy-section: an always-visible
+           header (title + current value), a collapsible .policy-body, and a
+           .policy-foot with its own Save button.
+  Hooks    data-field   = column name in the policy tables (03_policies_schemas.sql for
+           working time, 02_leaves_schema.sql for leave types)
+           data-summary = text slot in a header that shows the current value
+           data-audit   = "last changed" text, from modified_by / last_modified
+
+  Leave-type items are not written here: policies.js clones #ltItemTemplate once
+  per row of leave_types (every per-type rule is a column on that table now;
+  the proration tiers and approval rules are child tables, edited through
+  #ltTierRowTemplate and #ltRuleRowTemplate). Each item renders
+  as a card-grid accordion (.lt-cards-grid > .policy-card, one card per group
+  of related fields); the quick-stats bar, search box and status-filter pills
+  above the list are also driven from policies.js (refreshLeaveTypeListUI()).
+
+  Logic lives in assets/js/policies.js. Each section is wired with one
+  createSection({...}) config there; a new section needs one more config.
+-->
+
+<div class="app-shell" id="appShell">
+  <div class="app-main">
+    <header class="page-topbar">
+      <button type="button" class="sidebar-toggle-btn" id="sidebarToggle" aria-expanded="false" aria-label="Toggle menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 6h18M3 12h18M3 18h18"></path>
+        </svg>
+      </button>
+      <h1 class="page-title">Policies</h1>
+    </header>
+
+    <main class="page-content">
+      <div class="page-wrap policies-page">
+
+        <div class="panel panel-error hidden" id="policiesError" role="alert"></div>
+        <div class="panel panel-status hidden" id="policiesReadOnly">You can view policies here, but only admins can change them.</div>
+
+        <!-- ============================================================ -->
+        <!-- Category tabs                                                -->
+        <!-- ============================================================ -->
+        <div class="policy-tabs-bar">
+          <div class="policy-tabs" id="policyTabs" role="tablist" aria-label="Policy categories">
+            <button type="button" class="policy-tab active" id="tab-working-time" role="tab"
+                    data-bs-toggle="tab" data-bs-target="#pane-working-time"
+                    aria-controls="pane-working-time" aria-selected="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path>
+              </svg>
+              Working time
+            </button>
+            <button type="button" class="policy-tab" id="tab-leave-types" role="tab"
+                    data-bs-toggle="tab" data-bs-target="#pane-leave-types"
+                    aria-controls="pane-leave-types" aria-selected="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m12 2 10 5-10 5L2 7l10-5z"></path><path d="m2 17 10 5 10-5"></path><path d="m2 12 10 5 10-5"></path>
+              </svg>
+              Leave types
+            </button>
+          </div>
+        </div>
+
+        <div class="tab-content" id="policyPanes">
+
+          <!-- ========================================================== -->
+          <!-- TAB: Working time  (policy_weekly_working_days, policy_settings) -->
+          <!-- ========================================================== -->
+          <div class="tab-pane fade show active" id="pane-working-time" role="tabpanel"
+               aria-labelledby="tab-working-time" tabindex="0">
+            <div class="policy-group">
+
+              <!-- Section: working week -->
+              <section class="policy-section" id="sec-weekly">
+                <h2 class="policy-section-head">
+                  <button type="button" class="policy-toggle" data-bs-toggle="collapse"
+                          data-bs-target="#body-weekly" aria-expanded="true" aria-controls="body-weekly">
+                    <svg class="policy-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+                    <span class="policy-title">Working week</span>
+                    <span class="policy-summary" data-summary="weekly">Loading…</span>
+                  </button>
+                </h2>
+                <div class="collapse show" id="body-weekly">
+                  <div class="policy-body">
+                    <p class="policy-hint">Leave requests deduct working days only: full = 1, half = 0.5, off = 0.</p>
+                    <div class="week-strip">
+                      <div class="week-day" data-day-of-week="1">
+                        <span class="week-day-name" title="Monday">Mon</span>
+                        <div class="seg" role="radiogroup" aria-label="Monday">
+                          <input type="radio" name="dow-1" id="dow-1-off" value="0" data-field="working_value"><label class="seg-off" for="dow-1-off">Off</label>
+                          <input type="radio" name="dow-1" id="dow-1-half" value="0.5" data-field="working_value"><label class="seg-half" for="dow-1-half" title="Half day">½<span class="visually-hidden"> day</span></label>
+                          <input type="radio" name="dow-1" id="dow-1-full" value="1" data-field="working_value" checked><label class="seg-full" for="dow-1-full">Full</label>
+                        </div>
+                      </div>
+                      <div class="week-day" data-day-of-week="2">
+                        <span class="week-day-name" title="Tuesday">Tue</span>
+                        <div class="seg" role="radiogroup" aria-label="Tuesday">
+                          <input type="radio" name="dow-2" id="dow-2-off" value="0" data-field="working_value"><label class="seg-off" for="dow-2-off">Off</label>
+                          <input type="radio" name="dow-2" id="dow-2-half" value="0.5" data-field="working_value"><label class="seg-half" for="dow-2-half" title="Half day">½<span class="visually-hidden"> day</span></label>
+                          <input type="radio" name="dow-2" id="dow-2-full" value="1" data-field="working_value" checked><label class="seg-full" for="dow-2-full">Full</label>
+                        </div>
+                      </div>
+                      <div class="week-day" data-day-of-week="3">
+                        <span class="week-day-name" title="Wednesday">Wed</span>
+                        <div class="seg" role="radiogroup" aria-label="Wednesday">
+                          <input type="radio" name="dow-3" id="dow-3-off" value="0" data-field="working_value"><label class="seg-off" for="dow-3-off">Off</label>
+                          <input type="radio" name="dow-3" id="dow-3-half" value="0.5" data-field="working_value"><label class="seg-half" for="dow-3-half" title="Half day">½<span class="visually-hidden"> day</span></label>
+                          <input type="radio" name="dow-3" id="dow-3-full" value="1" data-field="working_value" checked><label class="seg-full" for="dow-3-full">Full</label>
+                        </div>
+                      </div>
+                      <div class="week-day" data-day-of-week="4">
+                        <span class="week-day-name" title="Thursday">Thu</span>
+                        <div class="seg" role="radiogroup" aria-label="Thursday">
+                          <input type="radio" name="dow-4" id="dow-4-off" value="0" data-field="working_value"><label class="seg-off" for="dow-4-off">Off</label>
+                          <input type="radio" name="dow-4" id="dow-4-half" value="0.5" data-field="working_value"><label class="seg-half" for="dow-4-half" title="Half day">½<span class="visually-hidden"> day</span></label>
+                          <input type="radio" name="dow-4" id="dow-4-full" value="1" data-field="working_value" checked><label class="seg-full" for="dow-4-full">Full</label>
+                        </div>
+                      </div>
+                      <div class="week-day" data-day-of-week="5">
+                        <span class="week-day-name" title="Friday">Fri</span>
+                        <div class="seg" role="radiogroup" aria-label="Friday">
+                          <input type="radio" name="dow-5" id="dow-5-off" value="0" data-field="working_value"><label class="seg-off" for="dow-5-off">Off</label>
+                          <input type="radio" name="dow-5" id="dow-5-half" value="0.5" data-field="working_value"><label class="seg-half" for="dow-5-half" title="Half day">½<span class="visually-hidden"> day</span></label>
+                          <input type="radio" name="dow-5" id="dow-5-full" value="1" data-field="working_value" checked><label class="seg-full" for="dow-5-full">Full</label>
+                        </div>
+                      </div>
+                      <div class="week-day" data-day-of-week="6">
+                        <span class="week-day-name" title="Saturday">Sat</span>
+                        <div class="seg" role="radiogroup" aria-label="Saturday">
+                          <input type="radio" name="dow-6" id="dow-6-off" value="0" data-field="working_value" checked><label class="seg-off" for="dow-6-off">Off</label>
+                          <input type="radio" name="dow-6" id="dow-6-half" value="0.5" data-field="working_value"><label class="seg-half" for="dow-6-half" title="Half day">½<span class="visually-hidden"> day</span></label>
+                          <input type="radio" name="dow-6" id="dow-6-full" value="1" data-field="working_value"><label class="seg-full" for="dow-6-full">Full</label>
+                        </div>
+                      </div>
+                      <div class="week-day" data-day-of-week="7">
+                        <span class="week-day-name" title="Sunday">Sun</span>
+                        <div class="seg" role="radiogroup" aria-label="Sunday">
+                          <input type="radio" name="dow-7" id="dow-7-off" value="0" data-field="working_value" checked><label class="seg-off" for="dow-7-off">Off</label>
+                          <input type="radio" name="dow-7" id="dow-7-half" value="0.5" data-field="working_value"><label class="seg-half" for="dow-7-half" title="Half day">½<span class="visually-hidden"> day</span></label>
+                          <input type="radio" name="dow-7" id="dow-7-full" value="1" data-field="working_value"><label class="seg-full" for="dow-7-full">Full</label>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="policy-foot">
+                    <span class="policy-audit" data-audit>Last changed —</span>
+                    <div class="policy-foot-actions">
+                      <button type="button" class="btn btn-ghost hidden" data-discard>Discard</button>
+                      <button type="button" class="btn btn-accent" data-save="weekly" disabled>Save changes</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Section: standard monthly working days -->
+              <section class="policy-section" id="sec-monthly">
+                <h2 class="policy-section-head">
+                  <button type="button" class="policy-toggle collapsed" data-bs-toggle="collapse"
+                          data-bs-target="#body-monthly" aria-expanded="false" aria-controls="body-monthly">
+                    <svg class="policy-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+                    <span class="policy-title">Monthly working days</span>
+                    <span class="policy-flag" title="Saved now; leave logic will start using it in a later update.">Not enforced yet</span>
+                    <span class="policy-summary" data-summary="monthly">Loading…</span>
+                  </button>
+                </h2>
+                <div class="collapse" id="body-monthly">
+                  <div class="policy-body">
+                    <div class="policy-fields">
+                      <div class="policy-field">
+                        <label class="form-label" for="monthly-days">Standard working days per month</label>
+                        <div class="input-group policy-num">
+                          <input type="number" class="form-control" id="monthly-days" data-field="standard_monthly_working_days"
+                                 min="1" max="31" step="0.5" value="22" inputmode="decimal">
+                          <span class="input-group-text">days</span>
+                        </div>
+                      </div>
+                      <p class="policy-hint">Typical values are 22, 24 or 26.</p>
+                    </div>
+                  </div>
+                  <div class="policy-foot">
+                    <span class="policy-audit" data-audit>Last changed —</span>
+                    <div class="policy-foot-actions">
+                      <button type="button" class="btn btn-ghost hidden" data-discard>Discard</button>
+                      <button type="button" class="btn btn-accent" data-save="monthly" disabled>Save changes</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Section: leave year cut-off -->
+              <section class="policy-section" id="sec-cutoff">
+                <h2 class="policy-section-head">
+                  <button type="button" class="policy-toggle collapsed" data-bs-toggle="collapse"
+                          data-bs-target="#body-cutoff" aria-expanded="false" aria-controls="body-cutoff">
+                    <svg class="policy-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+                    <span class="policy-title">Leave year cut-off</span>
+                    <span class="policy-flag" title="Saved now; leave logic will start using it in a later update.">Not enforced yet</span>
+                    <span class="policy-summary" data-summary="cutoff">Loading…</span>
+                  </button>
+                </h2>
+                <div class="collapse" id="body-cutoff">
+                  <div class="policy-body">
+                    <div class="policy-fields">
+                      <div class="policy-field">
+                        <label class="form-label" for="cutoff-month">Last day of the leave year</label>
+                        <div class="policy-date">
+                          <select class="form-select" id="cutoff-month" data-field="year_cutoff_month" aria-label="Month" data-month-select></select>
+                          <input type="number" class="form-control" id="cutoff-day" data-field="year_cutoff_day"
+                                 min="1" max="31" step="1" value="31" inputmode="numeric" aria-label="Day">
+                        </div>
+                      </div>
+                      <p class="policy-hint">The leave year runs <span data-cycle-hint>1 Jan – 31 Dec</span>. February is capped at 28 so the date exists every year.</p>
+                    </div>
+                  </div>
+                  <div class="policy-foot">
+                    <span class="policy-audit" data-audit>Last changed —</span>
+                    <div class="policy-foot-actions">
+                      <button type="button" class="btn btn-ghost hidden" data-discard>Discard</button>
+                      <button type="button" class="btn btn-accent" data-save="cutoff" disabled>Save changes</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+            </div>
+          </div>
+
+          <!-- ========================================================== -->
+          <!-- TAB: Leave types  (leave_types + proration tiers + approval rules) -->
+          <!-- ========================================================== -->
+          <div class="tab-pane fade" id="pane-leave-types" role="tabpanel"
+               aria-labelledby="tab-leave-types" tabindex="0">
+
+            <p class="policy-note">
+              <span class="policy-flag policy-flag--muted" title="Applied when a request is submitted or reviewed.">Enforced</span>
+              <span>Approval routing, advance notice and back-dating are checked on every leave request. Entitlement, proration, service bonus and carry-forward feed the balance ledger. The negative-balance limit is stored but doesn&rsquo;t block requests yet.</span>
+            </p>
+
+            <!-- Management Toolbar: quick stats + search + add type -->
+            <div class="lt-management-bar">
+              <div class="lt-toolbar-top">
+                <div class="lt-quick-stats">
+                  <span class="lt-stat-chip">
+                    <span>Total types</span>
+                    <span class="lt-stat-chip-num" id="ltTotalCount">0</span>
+                  </span>
+                  <span class="lt-stat-chip lt-stat-chip--active">
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="m9 12 2 2 4-4"></path></svg>
+                    <span>Active</span>
+                    <span class="lt-stat-chip-num" id="ltActiveCount">0</span>
+                  </span>
+                  <span class="lt-stat-chip lt-stat-chip--inactive">
+                    <span>Disabled</span>
+                    <span class="lt-stat-chip-num" id="ltDisabledCount">0</span>
+                  </span>
+                </div>
+
+                <div class="lt-add-form">
+                  <input type="text" class="form-control" id="newLeaveTypeInput" placeholder="New leave type name (e.g. Sabbatical)" maxlength="100">
+                  <input type="text" class="form-control lt-code-input" id="newLeaveCodeInput" placeholder="Code" maxlength="10" autocomplete="off" aria-label="Leave code (cannot be changed later)" title="Short code, e.g. AL, SL, UL. Can't be changed after it's created.">
+                  <button type="button" class="btn btn-accent btn-icon" id="addLeaveTypeBtn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M12 5v14M5 12h14"></path>
+                    </svg>
+                    Add type
+                  </button>
+                </div>
+              </div>
+
+              <!-- Search & Active/Disabled filter -->
+              <div class="lt-filter-strip">
+                <div class="lt-search-box">
+                  <svg class="lt-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path>
+                  </svg>
+                  <input type="search" class="form-control lt-search-input" id="ltSearchInput" placeholder="Filter by name..." aria-label="Search leave types">
+                </div>
+
+                <div class="lt-status-filter-pills" role="group" aria-label="Filter status">
+                  <button type="button" class="lt-filter-btn is-active" data-lt-filter="all">All</button>
+                  <button type="button" class="lt-filter-btn" data-lt-filter="active">Active only</button>
+                  <button type="button" class="lt-filter-btn" data-lt-filter="disabled">Disabled only</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="empty-state" id="ltLoading">Loading leave types…</div>
+
+            <!-- List container: managed by policies.js -->
+            <div class="policy-group lt-list hidden" id="ltList">
+              <!-- One .lt-item per leave type is added here by policies.js (from the template below) -->
+            </div>
+
+            <!-- Shown by policies.js when leave_types is empty, or when a search/filter matches nothing -->
+            <div class="empty-state hidden" id="leaveTypesEmpty">
+              No leave types yet. Add one above and it will appear here with its own policy to set.
+            </div>
+
+            <!-- One proration tier row. Cloned by policies.js into each leave type's
+                 [data-tiers-list] — not part of ltItemTemplate since rows are added/removed
+                 individually rather than once per leave type. -->
+            <template id="ltTierRowTemplate">
+              <div class="lt-tier-row">
+                <input type="number" class="form-control form-control-sm" data-tier-field="min_working_days"
+                       min="0" max="31" step="1" inputmode="numeric" placeholder="Days left ≥">
+                <svg class="lt-tier-arrow" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+                <input type="number" class="form-control form-control-sm" data-tier-field="credit_days"
+                       min="0" max="9999.9" step="0.5" inputmode="decimal" placeholder="Credit days">
+                <button type="button" class="btn-icon-only lt-tier-remove" data-remove-tier aria-label="Remove tier" title="Remove tier">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+                </button>
+              </div>
+            </template>
+
+            <!-- One approval-rule row. Cloned by policies.js into each leave type's
+                 [data-rules-list]. Steps run in a fixed order: 1st line, then 2nd
+                 line, then head of department. -->
+            <template id="ltRuleRowTemplate">
+              <div class="lt-rule-row">
+                <select class="form-select form-select-sm" data-rule-field="scope_type" aria-label="Rule applies to">
+                  <option value="everyone">Everyone</option>
+                  <option value="department">Department</option>
+                  <option value="position">Position</option>
+                  <option value="employee">Employee</option>
+                </select>
+                <select class="form-select form-select-sm" data-rule-field="scope_target" aria-label="Which one"></select>
+                <div class="input-group input-group-sm">
+                  <span class="input-group-text">From</span>
+                  <input type="number" class="form-control" data-rule-field="min_days" min="0" max="9999.9" step="0.5" value="0" inputmode="decimal" aria-label="Applies from this many days">
+                  <span class="input-group-text">days</span>
+                </div>
+                <div class="lt-rule-roles" role="group" aria-label="Approval steps, in order">
+                  <label class="lt-rule-role" title="Employee's first-line manager (supervisor)"><input class="form-check-input" type="checkbox" data-rule-field="require_first_line"><span>1st line</span></label>
+                  <label class="lt-rule-role" title="Employee's second-line manager"><input class="form-check-input" type="checkbox" data-rule-field="require_second_line"><span>2nd line</span></label>
+                  <label class="lt-rule-role" title="Head of the employee's department"><input class="form-check-input" type="checkbox" data-rule-field="require_hod"><span>HOD</span></label>
+                </div>
+                <button type="button" class="btn-icon-only lt-rule-remove" data-remove-rule aria-label="Remove rule" title="Remove rule">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+                </button>
+              </div>
+            </template>
+
+            <!-- Leave-type item. policies.js clones this once per row of leave_types and
+                 replaces {{id}} with leave_type_id. -->
+            <template id="ltItemTemplate">
+              <article class="lt-item" data-leave-type-id="{{id}}">
+                <div class="lt-head">
+                  <button type="button" class="lt-toggle collapsed" data-bs-toggle="collapse"
+                          data-bs-target="#lt-{{id}}-body" aria-expanded="false" aria-controls="lt-{{id}}-body">
+                    <svg class="policy-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+
+                    <span class="lt-main-meta">
+                      <span class="lt-name"><span data-lt-name></span></span>
+                      <span class="lt-code-badge" data-lt-code title="Leave code. It can't be changed after the leave type is created.">—</span>
+                      <span class="lt-state-badge lt-state-badge--active" data-lt-status-badge>Active</span>
+                    </span>
+
+                    <!-- Metric chips summarising the policy at a glance -->
+                    <span class="lt-cells">
+                      <span class="lt-metric-chip" title="Entitlement">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
+                        <span class="lt-metric-label">Entitlement:</span>
+                        <span class="lt-metric-val" data-summary="entitlement">—</span>
+                      </span>
+                      <span class="lt-metric-chip" title="When employees can start using it">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></svg>
+                        <span class="lt-metric-label">From:</span>
+                        <span class="lt-metric-val" data-summary="eligibility">—</span>
+                      </span>
+                      <span class="lt-metric-chip" title="Maximum carried forward">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
+                        <span class="lt-metric-label">Carry:</span>
+                        <span class="lt-metric-val" data-summary="carry_forward">—</span>
+                      </span>
+                      <span class="lt-metric-chip" title="Negative balance limit">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M8 12h8"></path></svg>
+                        <span class="lt-metric-label">Negative:</span>
+                        <span class="lt-metric-val" data-summary="negative">—</span>
+                      </span>
+                      <span class="lt-metric-chip" title="Approval steps">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+                        <span class="lt-metric-label">Approval:</span>
+                        <span class="lt-metric-val" data-summary="approval">—</span>
+                      </span>
+                    </span>
+                  </button>
+
+                  <!-- Sibling of .lt-toggle, not nested inside it — a <button> can't contain
+                       another <button>, and this shouldn't also trigger the accordion. -->
+                  <div class="lt-action-slot">
+                    <button type="button" class="btn btn-sm btn-ghost lt-status-toggle" data-toggle-active>Disable</button>
+                  </div>
+                </div>
+
+                <div class="collapse" id="lt-{{id}}-body" data-bs-parent="#ltList">
+                  <div class="policy-body">
+                    <div class="lt-cards-grid">
+
+                      <div class="policy-card">
+                        <div class="policy-card-head">
+                          <span class="policy-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                          </span>
+                          <div>
+                            <h3 class="policy-card-title">Effective from</h3>
+                            <p class="policy-card-sub">When employees can start using this leave</p>
+                          </div>
+                        </div>
+
+                        <div class="policy-card-fields">
+                          <div class="policy-card-field">
+                            <label class="form-label" for="lt{{id}}-elig-type">Employees can use this from</label>
+                            <select class="form-select policy-select" id="lt{{id}}-elig-type" data-field="eligibility_type">
+                              <option value="hired_date">Hired date (day one)</option>
+                              <option value="after_probation">End of probation period</option>
+                              <option value="after_service">After a length of service</option>
+                            </select>
+                          </div>
+                          <div class="policy-card-field" data-elig-service-field>
+                            <label class="form-label" for="lt{{id}}-elig-value">Length of service required</label>
+                            <div class="input-group policy-num-unit">
+                              <input type="number" class="form-control" id="lt{{id}}-elig-value" data-field="eligibility_value" min="1" max="999" step="1" inputmode="numeric">
+                              <select class="form-select" data-field="eligibility_unit" aria-label="Unit">
+                                <option value="months">months</option>
+                                <option value="years">years</option>
+                              </select>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="policy-card">
+                        <div class="policy-card-head">
+                          <span class="policy-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
+                          </span>
+                          <div>
+                            <h3 class="policy-card-title">Entitlement</h3>
+                            <p class="policy-card-sub">How many days, and how they are given</p>
+                          </div>
+                        </div>
+
+                        <div class="policy-card-fields">
+                          <div class="policy-card-field">
+                            <label class="form-label" for="lt{{id}}-ent-type">Entitlement is given as</label>
+                            <select class="form-select policy-select" id="lt{{id}}-ent-type" data-field="entitlement_type">
+                              <option value="annual">A yearly amount (whole cycle)</option>
+                              <option value="monthly">A monthly amount (accrued)</option>
+                            </select>
+                          </div>
+                          <div class="policy-card-field">
+                            <label class="form-label" for="lt{{id}}-entitlement">Entitlement</label>
+                            <div class="input-group policy-num policy-num--wide">
+                              <input type="number" class="form-control" id="lt{{id}}-entitlement" data-field="entitlement_days" min="0" max="999.99" step="0.5" inputmode="decimal">
+                              <span class="input-group-text"><span data-entitlement-unit>days / year</span></span>
+                            </div>
+                            <span class="policy-hint">Yearly: credited up front. Monthly: earned month by month</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="policy-card policy-card--full">
+                        <div class="policy-card-head">
+                          <span class="policy-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"></path><path d="M6 6h10"></path><path d="M6 10h10"></path></svg>
+                          </span>
+                          <div>
+                            <h3 class="policy-card-title">Proration &amp; partial month</h3>
+                            <p class="policy-card-sub">Rounding and the part-month at the start of employment</p>
+                          </div>
+                        </div>
+
+                        <div class="policy-card-fields policy-card-fields--align-center mb-1">
+                          <div class="policy-card-field">
+                            <label class="form-label" for="lt{{id}}-rounding">Prorated days are</label>
+                            <select class="form-select policy-select" id="lt{{id}}-rounding" data-field="prorate_rounding">
+                              <option value="exact">Rounded to 2 decimals (default)</option>
+                              <option value="round_down_half">Rounded down to 0.5</option>
+                              <option value="round_down_whole">Rounded down to 1</option>
+                            </select>
+                            <span class="policy-hint">Applies to every prorated amount for this type</span>
+                          </div>
+                        </div>
+
+                        <div class="policy-switch-row mb-2">
+                          <div class="policy-switch-info">
+                            <span class="policy-switch-title">Credit a partial hire month</span>
+                            <span class="policy-switch-desc">Full months from the hired date are always counted; this decides what the part-month at the start is worth</span>
+                          </div>
+                          <div class="form-check form-switch m-0">
+                            <input class="form-check-input" type="checkbox" role="switch" id="lt{{id}}-partial" data-field="use_partial_month">
+                          </div>
+                        </div>
+
+                        <div data-partial-fields>
+                          <div class="policy-card-fields policy-card-fields--align-center mb-2">
+                            <div class="policy-card-field">
+                              <label class="form-label" for="lt{{id}}-partial-method">Partial month is worth</label>
+                              <select class="form-select policy-select" id="lt{{id}}-partial-method" data-field="partial_month_method">
+                                <option value="daily_prorate">Working days left &divide; working days in the month</option>
+                                <option value="tiered">A set number of days by working days left (tiers)</option>
+                              </select>
+                            </div>
+                          </div>
+
+                          <div class="lt-tiers-container" data-tiers-editor>
+                            <div class="lt-tiers-container-head">
+                              <span class="lt-tiers-container-title">Partial month tier thresholds</span>
+                              <span class="policy-hint">Highest threshold met sets the credit</span>
+                            </div>
+
+                            <div class="lt-tier-header" aria-hidden="true">
+                              <span>Working days left in hire month</span>
+                              <span></span>
+                              <span>Credit granted</span>
+                              <span></span>
+                            </div>
+
+                            <div class="lt-tiers-list" data-tiers-list></div>
+
+                            <button type="button" class="btn btn-sm btn-ghost btn-icon mt-2" data-add-tier>
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+                              Add tier rule
+                            </button>
+                            <span class="policy-hint d-block mt-1">Add a tier with 0 days left to set the &ldquo;otherwise&rdquo; credit. No matching tier credits nothing.</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="policy-card">
+                        <div class="policy-card-head">
+                          <span class="policy-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 2 3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path></svg>
+                          </span>
+                          <div>
+                            <h3 class="policy-card-title">Service bonus</h3>
+                            <p class="policy-card-sub">Extra days that grow with length of service</p>
+                          </div>
+                        </div>
+
+                        <div class="policy-switch-row">
+                          <div class="policy-switch-info">
+                            <span class="policy-switch-title">Service bonus</span>
+                            <span class="policy-switch-desc">Extra days for every block of service completed</span>
+                          </div>
+                          <div class="form-check form-switch m-0">
+                            <input class="form-check-input" type="checkbox" role="switch" id="lt{{id}}-bonus-on" data-field="service_bonus_enabled">
+                          </div>
+                        </div>
+
+                        <div class="policy-card-fields policy-card-fields--compact mt-2" data-bonus-fields>
+                          <div class="policy-card-field">
+                            <div class="input-group policy-num-unit">
+                              <span class="input-group-text">Every</span>
+                              <input type="number" class="form-control" id="lt{{id}}-bonus-interval" data-field="service_bonus_interval_value" min="1" max="999" step="1" inputmode="numeric" aria-label="Every how many">
+                              <select class="form-select" data-field="service_bonus_unit" aria-label="Unit">
+                                <option value="months">months</option>
+                                <option value="years">years</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div class="policy-card-field">
+                            <div class="input-group policy-num">
+                              <span class="input-group-text">Add</span>
+                              <input type="number" class="form-control" id="lt{{id}}-bonus-days" data-field="service_bonus_days" min="0" max="999.9" step="0.5" inputmode="decimal" aria-label="Bonus days">
+                              <span class="input-group-text">days</span>
+                            </div>
+                          </div>
+                        </div>
+                        <span class="policy-hint" data-bonus-hint>Added on top of the entitlement, with no upper limit</span>
+                      </div>
+
+                      <div class="policy-card">
+                        <div class="policy-card-head">
+                          <span class="policy-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M8 12h8"></path></svg>
+                          </span>
+                          <div>
+                            <h3 class="policy-card-title">Negative balance</h3>
+                            <p class="policy-card-sub">Booking beyond the current balance</p>
+                          </div>
+                        </div>
+
+                        <div class="policy-switch-row">
+                          <div class="policy-switch-info">
+                            <span class="policy-switch-title">Allow a negative balance</span>
+                            <span class="policy-switch-desc">Employees may book more than they have earned, up to a limit</span>
+                          </div>
+                          <div class="form-check form-switch m-0">
+                            <input class="form-check-input" type="checkbox" role="switch" id="lt{{id}}-neg-on" data-field="allow_negative_balance">
+                          </div>
+                        </div>
+
+                        <div class="policy-card-fields mt-2" data-negative-fields>
+                          <div class="policy-card-field">
+                            <label class="form-label" for="lt{{id}}-neg-max">Maximum negative balance</label>
+                            <div class="input-group policy-num">
+                              <input type="number" class="form-control" id="lt{{id}}-neg-max" data-field="max_negative_days" min="0" max="9999.9" step="0.5" inputmode="decimal">
+                              <span class="input-group-text">days</span>
+                            </div>
+                            <span class="policy-hint">Stored for now. Requests over this limit will be blocked once it&rsquo;s enforced</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="policy-card">
+                        <div class="policy-card-head">
+                          <span class="policy-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path><path d="M16 21h5v-5"></path></svg>
+                          </span>
+                          <div>
+                            <h3 class="policy-card-title">Carry forward &amp; expiry</h3>
+                            <p class="policy-card-sub">Rules for rolling over unused days</p>
+                          </div>
+                        </div>
+
+                        <div class="policy-card-fields">
+                          <div class="policy-card-field">
+                            <label class="form-label" for="lt{{id}}-carry">Maximum carried forward</label>
+                            <div class="input-group policy-num">
+                              <input type="number" class="form-control" id="lt{{id}}-carry" data-field="max_carry_forward" min="0" max="9999.9" step="0.5" inputmode="decimal">
+                              <span class="input-group-text">days</span>
+                            </div>
+                            <span class="policy-hint">Max days moved to the new year</span>
+                          </div>
+
+                          <div class="policy-card-field">
+                            <label class="form-label" for="lt{{id}}-exp-month">Lapse on (expiry)</label>
+                            <div class="policy-date">
+                              <select class="form-select" id="lt{{id}}-exp-month" data-field="carry_forward_expiry_month" data-month-select aria-label="Month">
+                                <option value="">Never</option>
+                              </select>
+                              <input type="number" class="form-control" id="lt{{id}}-exp-day" data-field="carry_forward_expiry_day" min="1" max="31" step="1" placeholder="Day" inputmode="numeric" aria-label="Day" disabled>
+                            </div>
+                            <span class="policy-hint">Carried days expire on this date</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="policy-card">
+                        <div class="policy-card-head">
+                          <span class="policy-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
+                          </span>
+                          <div>
+                            <h3 class="policy-card-title">Booking rules</h3>
+                            <p class="policy-card-sub">Advance notice and back-dating</p>
+                          </div>
+                        </div>
+
+                        <div class="policy-switch-row">
+                          <div class="policy-switch-info">
+                            <span class="policy-switch-title">Advance notice required</span>
+                            <span class="policy-switch-desc">Requests must be submitted ahead of the leave start date</span>
+                          </div>
+                          <div class="form-check form-switch m-0">
+                            <input class="form-check-input" type="checkbox" role="switch" id="lt{{id}}-notice-on" data-field="require_prior_notice">
+                          </div>
+                        </div>
+
+                        <div class="policy-card-fields mt-2" data-notice-fields>
+                          <div class="policy-card-field">
+                            <label class="form-label" for="lt{{id}}-notice-days">Submit at least</label>
+                            <div class="input-group policy-num policy-num--wide">
+                              <input type="number" class="form-control" id="lt{{id}}-notice-days" data-field="prior_notice_days" min="1" max="365" step="1" inputmode="numeric">
+                              <span class="input-group-text">days before</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div class="policy-switch-row mt-2">
+                          <div class="policy-switch-info">
+                            <span class="policy-switch-title">Allow back-dated requests</span>
+                            <span class="policy-switch-desc">Leave that started in the past can still be requested</span>
+                          </div>
+                          <div class="form-check form-switch m-0">
+                            <input class="form-check-input" type="checkbox" role="switch" id="lt{{id}}-backdate-on" data-field="allow_backdate">
+                          </div>
+                        </div>
+
+                        <div class="policy-card-fields mt-2" data-backdate-fields>
+                          <div class="policy-card-field">
+                            <label class="form-label" for="lt{{id}}-backdate">Back-date up to</label>
+                            <div class="input-group policy-num">
+                              <input type="number" class="form-control" id="lt{{id}}-backdate" data-field="backdate_days" min="1" max="365" step="1" inputmode="numeric">
+                              <span class="input-group-text">days</span>
+                            </div>
+                            <span class="policy-hint">Admins can always file back-dated leave</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="policy-card policy-card--full">
+                        <div class="policy-card-head">
+                          <span class="policy-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+                          </span>
+                          <div>
+                            <h3 class="policy-card-title">Review &amp; approval</h3>
+                            <p class="policy-card-sub">Who has to approve a request, and when</p>
+                          </div>
+                        </div>
+
+                        <div class="policy-switch-row">
+                          <div class="policy-switch-info">
+                            <span class="policy-switch-title">Requires approval</span>
+                            <span class="policy-switch-desc">Off means requests are approved automatically when submitted</span>
+                          </div>
+                          <div class="form-check form-switch m-0">
+                            <input class="form-check-input" type="checkbox" role="switch" id="lt{{id}}-requires-approval" data-field="requires_approval" checked>
+                          </div>
+                        </div>
+
+                        <div data-rules-wrap>
+                          <div class="lt-rules-container">
+                            <div class="lt-tiers-container-head">
+                              <span class="lt-tiers-container-title">Who reviews</span>
+                              <span class="policy-hint">Steps run in order: 1st line &rarr; 2nd line &rarr; HOD</span>
+                            </div>
+
+                            <div class="lt-rule-header" aria-hidden="true">
+                              <span>Applies to</span>
+                              <span></span>
+                              <span>Requests of at least</span>
+                              <span>Approval steps</span>
+                              <span></span>
+                            </div>
+
+                            <p class="lt-rules-empty hidden" data-rules-empty>No rules yet. Requests fall back to the employee&rsquo;s first-line manager.</p>
+                            <div class="lt-rules-list" data-rules-list></div>
+
+                            <button type="button" class="btn btn-sm btn-ghost btn-icon mt-2" data-add-rule>
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+                              Add rule
+                            </button>
+                            <span class="policy-hint d-block mt-1">The most specific rule wins (employee, then position, then department, then everyone); within it, the highest &ldquo;at least&rdquo; value the request meets.</span>
+                          </div>
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+
+                  <div class="policy-foot">
+                    <span class="policy-audit" data-audit>Last changed —</span>
+                    <div class="policy-foot-actions">
+                      <button type="button" class="btn btn-ghost hidden" data-discard>Discard changes</button>
+                      <button type="button" class="btn btn-accent" data-save="leave_type" disabled>Save policy</button>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            </template>
+
+          </div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <aside class="app-sidebar" id="sidebarRoot"></aside>
+</div>
+
+<div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../assets/config.js"></script>
+<script src="../assets/js/supabaseClient.js"></script>
+<script src="../assets/js/sidebar.js"></script>
+<script src="../assets/js/policies.js"></script>
+</body>
+</html>

@@ -1,0 +1,368 @@
+/* =====================================================================
+   Leave details modal (#leaveDetailModal) — shared by leaves.html and
+   calendar.html. Markup is produced by assets/js/leaveDetail.js.
+   Load AFTER styles.css / leaves.css / calendar.css so these win.
+   Everything is scoped to #leaveDetailModal (values match sample_design.html).
+   ===================================================================== */
+#leaveDetailModal {
+  --ld-border: #e2e8f0;
+  --ld-text: #0f172a;
+  --ld-muted: #64748b;
+  --ld-font: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--ld-font);
+}
+#leaveDetailModal .modal-dialog { max-width: 440px; margin: 0.85rem auto; }
+/* Width follows the number of tracker nodes (Request + 0-3 approvers), set
+   via data-nodes in leaveDetail.js: 2-3 nodes = 440px, 4 = 500px, 5+ = 560px. */
+#leaveDetailModal .modal-dialog:has(.tracking-line-container[data-nodes="4"]) { max-width: 500px; }
+#leaveDetailModal .modal-dialog:has(.tracking-line-container[data-nodes="5"]) { max-width: 560px; }
+#leaveDetailModal .modal-content {
+  border: 1px solid var(--ld-border);
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.12), 0 4px 6px -4px rgba(15, 23, 42, 0.05);
+  background: #fff;
+  overflow: hidden;
+  color: var(--ld-text);
+}
+#leaveDetailModal .modal-header {
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid var(--ld-border);
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+#leaveDetailModal .modal-title {
+  font-family: var(--ld-font);
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--ld-text);
+  margin: 0;
+  line-height: 1.2;
+}
+#leaveDetailModal .detail-title-wrap { display: flex; align-items: center; gap: 0.5rem; }
+#leaveDetailModal .btn-close { font-size: 0.7rem; }
+#leaveDetailModal .modal-body { padding: 1rem; }
+#leaveDetailModal .modal-footer {
+  padding: 0.45rem 0.85rem;
+  border-top: 1px solid var(--ld-border);
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+/* Status badge */
+#leaveDetailModal .status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-radius: 9999px;
+  line-height: 1.2;
+  --dot: #d97706;
+  background: #fef3c7; color: #92400e; border: 1px solid #fde68a;
+}
+#leaveDetailModal .status-badge::before {
+  content: "";
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--dot);
+}
+#leaveDetailModal .status-badge.is-approved  { --dot: #10b981; background: #ecfdf5; color: #065f46; border-color: #a7f3d0; }
+#leaveDetailModal .status-badge.is-rejected  { --dot: #f43f5e; background: #fff1f2; color: #9f1239; border-color: #fecdd3; }
+#leaveDetailModal .status-badge.is-cancelled { --dot: #94a3b8; background: #f1f5f9; color: #64748b; border-color: #e2e8f0; }
+
+
+/* Hero: employee identity + leave category */
+#leaveDetailModal .detail-hero-card {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  background: #f8fafc;
+  border: 1px solid var(--ld-border);
+  border-radius: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+#leaveDetailModal .detail-emp-profile { display: flex; align-items: center; gap: 0.45rem; min-width: 0; }
+#leaveDetailModal .detail-emp-avatar {
+  width: 32px; height: 32px; border-radius: 50%;
+  background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.75rem; font-weight: 700; flex-shrink: 0;
+}
+#leaveDetailModal .detail-emp-meta { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
+#leaveDetailModal .detail-emp-name { font-size: 0.8rem; font-weight: 700; color: var(--ld-text); }
+#leaveDetailModal .detail-emp-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.63rem; font-weight: 600; color: var(--ld-muted);
+}
+#leaveDetailModal .leave-category-pill {
+  font-size: 0.7rem; font-weight: 700;
+  padding: 0.2rem 0.55rem;
+  border-radius: 9999px;
+  background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe;
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  white-space: nowrap;
+}
+#leaveDetailModal .leave-category-pill::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%; background: #2563eb;
+}
+
+/* Schedule: period + duration */
+#leaveDetailModal .detail-schedule-card {
+  background: #fff;
+  border: 1px solid var(--ld-border);
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  margin-bottom: 0.45rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+#leaveDetailModal .schedule-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 0.35rem;
+}
+#leaveDetailModal .schedule-title {
+  font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--ld-muted);
+  display: flex; align-items: center; gap: 0.25rem;
+}
+#leaveDetailModal .schedule-duration-badge {
+  font-size: 0.72rem; font-weight: 700;
+  padding: 0.12rem 0.5rem;
+  border-radius: 0.35rem;
+  background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0;
+  display: inline-flex; align-items: center; gap: 0.25rem;
+}
+#leaveDetailModal .schedule-dates-row {
+  display: flex; align-items: center; justify-content: space-between;
+  background: #f8fafc;
+  border: 1px solid #f1f5f9;
+  border-radius: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  gap: 0.35rem;
+}
+#leaveDetailModal .date-node { display: flex; flex-direction: column; line-height: 1.25; }
+#leaveDetailModal .date-node--right { text-align: right; align-items: flex-end; }
+#leaveDetailModal .date-node-label { font-size: 0.62rem; font-weight: 600; text-transform: uppercase; color: #94a3b8; }
+#leaveDetailModal .date-node-val { font-size: 0.76rem; font-weight: 700; color: #1e293b; white-space: nowrap; }
+#leaveDetailModal .date-session-tag {
+  font-size: 0.62rem; font-weight: 600; color: var(--ld-muted);
+  background: #fff; border: 1px solid var(--ld-border); border-radius: 3px;
+  padding: 0 0.25rem;
+  display: inline-block; width: fit-content; margin-top: 0.1rem;
+}
+#leaveDetailModal .date-arrow-separator { color: #cbd5e1; font-size: 0.85rem; flex-shrink: 0; }
+
+/* Reason / notes */
+#leaveDetailModal .detail-reason-box {
+  background: #f8fafc;
+  border: 1px solid var(--ld-border);
+  border-radius: 0.5rem;
+  padding: 0.4rem 0.65rem;
+  margin-bottom: 0.45rem;
+  display: flex; align-items: flex-start; gap: 0.4rem;
+  font-size: 0.72rem;
+}
+#leaveDetailModal .detail-reason-box > i { color: var(--ld-muted); margin-top: 0.05rem; flex-shrink: 0; }
+#leaveDetailModal .detail-reason-content { line-height: 1.35; flex: 1; min-width: 0; }
+#leaveDetailModal .detail-reason-label {
+  font-size: 0.64rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+  color: var(--ld-muted); margin-bottom: 0.1rem;
+}
+#leaveDetailModal .detail-reason-text { color: #334155; font-weight: 500; white-space: pre-wrap; word-break: break-word; }
+#leaveDetailModal .detail-reason-text.is-empty { color: #94a3b8; font-style: italic; }
+
+/* Details list — only used for approver comments / rejection reason / filed by */
+#leaveDetailModal .detail-list {
+  margin: 0 0 0.45rem;
+  padding: 0.3rem 0.6rem;
+  background: #f8fafc;
+  border: 1px solid var(--ld-border);
+  border-radius: 0.5rem;
+}
+#leaveDetailModal .detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 0.18rem 0;
+  font-size: 0.76rem;
+  border-bottom: 1px dashed #edf2f7;
+}
+#leaveDetailModal .detail-row:last-child { border-bottom: none; }
+#leaveDetailModal .detail-row dt {
+  font-weight: 500;
+  color: var(--ld-muted);
+  margin: 0;
+  font-size: 0.72rem;
+  flex-shrink: 0;
+  padding-right: 0.5rem;
+}
+#leaveDetailModal .detail-row dd {
+  font-weight: 600;
+  color: var(--ld-text);
+  margin: 0;
+  text-align: right;
+  font-size: 0.76rem;
+  word-break: break-word;
+}
+#leaveDetailModal .detail-row dd strong { font-family: inherit; }
+#leaveDetailModal .half-day-tag { font-size: 0.68rem; font-weight: 500; color: var(--ld-muted); }
+#leaveDetailModal .detail-text {
+  background: #fff;
+  border: 1px solid var(--ld-border);
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #334155;
+  text-align: left;
+  display: inline-block;
+  white-space: pre-wrap;
+}
+#leaveDetailModal .detail-note.is-approved { background: #ecfdf5; border-color: #a7f3d0; color: #065f46; }
+#leaveDetailModal .detail-note.is-rejected { background: #fff1f2; border-color: #fecdd3; color: #9f1239; }
+
+/* Approval tracker — N steps; --n / --done / --gap are set inline by leaveDetail.js */
+#leaveDetailModal .approval-tracker-card {
+  background: #fff;
+  border: 1px solid var(--ld-border);
+  border-radius: 0.55rem;
+  padding: 0.45rem 0.65rem 0.55rem;
+  margin-bottom: 0.25rem;
+}
+#leaveDetailModal .approval-tracker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}
+#leaveDetailModal .tracker-title {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #475569;
+}
+#leaveDetailModal .tracker-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.1rem 0.4rem;
+  border-radius: 9999px;
+  background: #fef3c7; color: #92400e; border: 1px solid #fde68a;
+}
+#leaveDetailModal .tracker-badge.is-approved  { background: #ecfdf5; color: #065f46; border-color: #a7f3d0; }
+#leaveDetailModal .tracker-badge.is-rejected  { background: #fff1f2; color: #9f1239; border-color: #fecdd3; }
+#leaveDetailModal .tracker-badge.is-cancelled { background: #f1f5f9; color: #64748b; border-color: #e2e8f0; }
+
+#leaveDetailModal .tracking-line-container {
+  --n: 3; --done: 0; --gap: 0;
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-top: 0.25rem;
+}
+#leaveDetailModal .tracking-line-container::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  left: calc(50% / var(--n));
+  right: calc(50% / var(--n));
+  height: 2px;
+  background: var(--ld-border);
+  z-index: 1;
+}
+#leaveDetailModal .line-segment-completed {
+  position: absolute;
+  top: 10px;
+  left: calc(50% / var(--n));
+  width: calc(100% / var(--n) * var(--done));
+  height: 2px;
+  background: #10b981;
+  z-index: 2;
+}
+#leaveDetailModal .line-segment-pending {
+  position: absolute;
+  top: 10px;
+  left: calc(50% / var(--n) + 100% / var(--n) * var(--done));
+  width: calc(100% / var(--n) * var(--gap));
+  height: 0;
+  border-top: 2px dashed #f59e0b;
+  z-index: 2;
+}
+#leaveDetailModal .tracking-step {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  width: calc(100% / var(--n));
+  min-width: 0;
+}
+#leaveDetailModal .step-circle {
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.62rem;
+  margin-bottom: 0.25rem;
+  background: #fff;
+  border: 2px solid #cbd5e1;
+  color: #94a3b8;
+  box-shadow: 0 0 0 2px #fff;
+}
+#leaveDetailModal .tracking-step.is-done .step-circle { background: #10b981; border-color: #10b981; color: #fff; }
+#leaveDetailModal .tracking-step.is-current .step-circle {
+  background: #fffbeb; border-color: #f59e0b; color: #d97706;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18), 0 0 0 1px #fff;
+}
+#leaveDetailModal .tracking-step.is-rejected .step-circle { background: #f43f5e; border-color: #f43f5e; color: #fff; }
+#leaveDetailModal .tracking-step.is-cancelled .step-circle { background: #f1f5f9; border-color: #94a3b8; color: #64748b; }
+#leaveDetailModal .step-name {
+  font-size: 0.7rem; font-weight: 700; color: #1e293b;
+  line-height: 1.1; margin-bottom: 0.05rem;
+}
+#leaveDetailModal .step-detail { font-size: 0.63rem; color: var(--ld-muted); line-height: 1.15; }
+#leaveDetailModal .tracking-step.is-current .step-detail { color: #b45309; font-weight: 600; }
+#leaveDetailModal .tracking-step.is-rejected .step-detail { color: #9f1239; }
+
+/* Footer actions */
+#leaveDetailModal .detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  flex: 1 1 auto;
+  width: 100%;
+  margin: 0;
+}
+#leaveDetailModal .detail-actions:empty { display: none; }
+#leaveDetailModal .detail-primary { display: flex; align-items: center; gap: 0.25rem; margin-left: auto; }
+#leaveDetailModal .detail-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.74rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.4rem;
+}
+#leaveDetailModal .detail-actions .btn svg { width: 14px; height: 14px; }
+#leaveDetailModal .btn-ghost {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--ld-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.22rem 0.6rem;
+  border-radius: 0.4rem;
+}
+#leaveDetailModal .btn-ghost:hover { background: #e2e8f0; color: var(--ld-text); }
+
+.btn-outline-rose { background: transparent; border: 1px solid var(--danger, #B0503D); color: var(--danger, #B0503D); }
+.btn-outline-rose:hover,
+.btn-outline-rose:focus { background: var(--danger-soft, #F7E7E2); border-color: var(--danger, #B0503D); color: var(--danger, #B0503D); }

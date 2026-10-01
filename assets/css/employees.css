@@ -1,0 +1,1040 @@
+/* =====================================================================
+   ESS — Employees page (pages/employees.html)
+   Load AFTER styles.css. Shared components (stat cards, table card,
+   filter dropdowns, upload panel, lookup-manage list, toasts, ...) stay
+   in styles.css — only what is unique to this page lives here.
+   ===================================================================== */
+
+/* Toolbar search: compact, fits its container */
+#viewListContainer .toolbar-search {
+  flex: 1 1 180px;
+  width: auto;
+  min-width: 150px;
+  max-width: 220px;
+}
+#viewListContainer .toolbar-search .input-group-text {
+  background: #fff;
+  color: #64748b;
+  padding: 0.2rem 0.45rem;
+}
+#searchEmployeeInput {
+  font-size: 0.72rem;
+  padding: 0.2rem 0.5rem;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+#searchEmployeeInput::placeholder { font-size: 0.72rem; color: #94a3b8; }
+
+/* =====================================================================
+   Employee list (#viewListContainer) — list / cards / pagination design
+   from sample_design.html. Colours are hard-coded here (scoped to
+   #viewListContainer via --vl-* tokens) so this doesn't depend on
+   tokens that only exist in the sample's own :root.
+   ===================================================================== */
+#viewListContainer {
+  --vl-border: #e2e8f0;
+  --vl-border-light: #f1f5f9;
+  --vl-text: #0f172a;
+  --vl-muted: #64748b;
+  --vl-subtle: #94a3b8;
+  --vl-radius-sm: 6px;
+  --vl-radius-md: 8px;
+  --vl-radius-lg: 12px;
+  --vl-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+
+/* Segmented view switcher (List / Cards) */
+.view-switcher-group {
+  display: inline-flex;
+  background: #f1f5f9;
+  border: 1px solid var(--vl-border, #e2e8f0);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+.view-switcher-btn {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  padding: 0.22rem 0.55rem;
+  border-radius: 4px;
+  font-size: 0.71rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.view-switcher-btn.is-active {
+  background: #fff;
+  color: #0f172a;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+.view-switcher-btn svg { width: 13px; height: 13px; }
+
+/* ---- List view (#viewListTable): Employee & Position, Department & Unit,
+   Reporting Line, Hired date, Status, Action. table-layout: fixed keeps it
+   within the viewport (no horizontal scroll); long values ellipsis-truncate. */
+#viewListContainer .table-scroll { overflow-x: hidden; }
+#viewListTable {
+  table-layout: fixed;
+  width: 100%;
+  font-size: 0.74rem;
+  color: #334155;
+}
+#viewListTable thead th {
+  padding: 0.45rem 0.65rem;
+  font-size: 0.67rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #475569;
+  background: #f8fafc;
+  white-space: nowrap;
+}
+#viewListTable tbody td {
+  padding: 0.42rem 0.65rem;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--vl-border-light);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Column widths are PERCENTAGES (table-layout: fixed, width: 100%), so every
+   column shrinks/grows in proportion when the sidebar opens or the viewport
+   changes. Never mix px widths in here: fixed px columns can't shrink and
+   push all the slack onto the one column left without a width. Total = 100%.
+   (If the Action column is hidden for non-admins, the rest scale up evenly.) */
+#viewListTable .idx-col { width: 4%; text-align: center; color: var(--vl-subtle); font-size: 0.7rem; }
+#viewListTable th:nth-child(2), #viewListTable td:nth-child(2) { width: 22%; } /* Employee & Position */
+#viewListTable th:nth-child(3), #viewListTable td:nth-child(3) { width: 20%; } /* Department & Unit */
+#viewListTable th:nth-child(4), #viewListTable td:nth-child(4) { width: 18%; } /* Reporting Line */
+#viewListTable th:nth-child(5), #viewListTable td:nth-child(5) { width: 11%; } /* Hired date */
+#viewListTable th:nth-child(6), #viewListTable td:nth-child(6) { width: 9%; }  /* Status */
+#viewListTable th:nth-child(7), #viewListTable td:nth-child(7) { width: 10%; } /* Portal account */
+#viewListTable .actions-col { width: 6%; text-align: center; }
+/* Hired Date, Status and Action: header and cell content share the same centre line. */
+#viewListTable th:nth-child(n+5), #viewListTable td:nth-child(n+5) { text-align: center; }
+#viewListTable td:nth-child(6) .status-badge,
+#viewListTable td:nth-child(7) .status-badge { display: inline-flex; }
+#viewListTable .actions-wrap { display: flex; justify-content: center; }
+
+/* Rows / cards open the employee details card when clicked (see makeOpenable() in employees.js). */
+#viewListTable tbody tr.is-clickable { cursor: pointer; transition: background-color 0.12s ease; }
+#viewListTable tbody tr.is-clickable:hover { background-color: #f8fafc; }
+#viewListTable tbody tr.is-clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--bg);
+}
+
+/* Employee profile cell (avatar + name/ID badge + position) */
+.emp-profile-cell { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
+.emp-avatar,
+.card-avatar {
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.05);
+}
+.emp-avatar  { width: 32px; height: 32px; font-size: 0.72rem; }
+.card-avatar { width: 36px; height: 36px; font-size: 0.78rem; }
+.avatar-blue    { background: #eff6ff; color: #1d4ed8; }
+.avatar-violet  { background: #f5f3ff; color: #6d28d9; }
+.avatar-emerald { background: #ecfdf5; color: #047857; }
+.avatar-amber   { background: #fffbeb; color: #b45309; }
+.avatar-rose    { background: #fff1f2; color: #be123c; }
+.avatar-cyan    { background: #ecfeff; color: #0e7490; }
+
+.emp-profile-info { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+.emp-name-line { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
+.emp-name {
+  font-size: 0.73rem;
+  font-weight: 700;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.emp-code-badge {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.63rem;
+  font-weight: 600;
+  padding: 0.06rem 0.3rem;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+.emp-position-main {
+  font-size: 0.65rem;
+  font-weight: 500;
+  color: #2563eb;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.emp-position-main.text-muted { color: #64748b !important; }
+
+/* Stacked primary/secondary cells */
+.sec-group { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+.sec-primary {
+  font-size: 0.73rem;
+  font-weight: 600;
+  color: #334155;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sec-secondary {
+  font-size: 0.66rem;
+  color: #64748b;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-width: 0;
+}
+.sec-secondary svg { width: 10px; height: 10px; color: #94a3b8; flex-shrink: 0; }
+.sec-text { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+/* Row action buttons (End employment / Reactivate) */
+#viewListContainer .btn-icon-only svg { width: 14px; height: 14px; }
+
+/* Employee status badge variants (base .status-badge is shared) */
+.status-badge.is-active {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+.status-badge.is-active::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #10b981;
+}
+.status-badge.is-terminated {
+  background: #f1f5f9;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+}
+
+/* Portal account badge: is the employee linked to a user account (auth_user_id)?
+   Reuses the shared .status-badge pill; blue = linked, muted grey = not linked. */
+.status-badge.portal-badge i { font-size: 0.8rem; line-height: 1; }
+.status-badge.portal-badge.is-linked {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+.status-badge.portal-badge.is-unlinked {
+  background: #f8fafc;
+  color: #94a3b8;
+  border: 1px dashed #cbd5e1;
+}
+/* Compact badges in the employee list and cards (Active/Inactive, Linked/Not linked).
+   Scoped here so the shared .status-badge (e.g. in the lookup manager) keeps its size. */
+#viewListContainer .status-badge {
+  gap: 3px;
+  padding: 1px 7px;
+  font-size: 0.66rem;
+  line-height: 1.5;
+}
+#viewListContainer .status-badge.is-active::before { width: 3px; height: 3px; }
+#viewListContainer .status-badge.portal-badge i { font-size: 0.7rem; }
+
+/* Employee details modal: status + portal badges next to the title. */
+.modal-header-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-left: 0.75rem;
+}
+.modal-header-badges .status-badge {
+  gap: 3px;
+  padding: 1px 8px;
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+.modal-header-badges .status-badge.is-active::before { width: 3px; height: 3px; }
+.modal-header-badges .status-badge.portal-badge i { font-size: 0.72rem; }
+
+/* Card footer: status + portal badges side by side, action button stays on the right. */
+.card-badges { display: flex; align-items: center; flex-wrap: wrap; gap: 0.35rem; }
+
+/* ---- Card view (#viewCardGrid) ---- */
+.employee-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 0.65rem;
+  padding: 0.75rem;
+  background: #f8fafc;
+}
+.employee-card-grid .empty-state { grid-column: 1 / -1; }
+.employee-profile-card {
+  background: #fff;
+  border: 1px solid var(--vl-border, #e2e8f0);
+  border-radius: 12px;
+  padding: 0.75rem;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.employee-profile-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+  border-color: #cbd5e1;
+}
+.employee-profile-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.card-top-row { display: flex; align-items: flex-start; gap: 0.65rem; margin-bottom: 0.55rem; }
+.card-top-row .emp-profile-info { flex: 1; }
+.card-meta-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.45rem 0.55rem;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px solid #f1f5f9;
+  margin-bottom: 0.55rem;
+  font-size: 0.7rem;
+}
+.card-meta-item { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
+.card-meta-label { color: #64748b; font-weight: 500; font-size: 0.67rem; }
+.card-meta-val {
+  font-weight: 600;
+  color: #334155;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+.card-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 0.4rem;
+  border-top: 1px solid #f1f5f9;
+}
+
+/* ---- Pagination footer (#viewListPagination) ---- */
+.table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.85rem;
+  padding: 0.5rem 0.85rem;
+  border-top: 1px solid #e2e8f0;
+  background: #fff;
+  font-size: 0.71rem;
+  color: #64748b;
+}
+.pagination-size { display: flex; align-items: center; gap: 0.4rem; font-weight: 500; }
+.pagination-size label { margin: 0; }
+.pagination-size .form-select {
+  width: auto;
+  font-size: 0.71rem;
+  padding: 0.15rem 1.6rem 0.15rem 0.5rem;
+  border-radius: 6px;
+  border-color: #cbd5e1;
+  color: #1e293b;
+  font-weight: 600;
+}
+.pagination-info { font-weight: 600; }
+.pagination-list { display: flex; align-items: center; gap: 2px; list-style: none; margin: 0; padding: 0; }
+.pagination-btn {
+  min-width: 26px;
+  height: 26px;
+  padding: 0 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #475569;
+  font-size: 0.71rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.pagination-btn:hover:not(:disabled):not(.is-active) { background: #f1f5f9; color: #0f172a; }
+.pagination-btn.is-active { background: var(--accent); border-color: var(--accent); color: #fff; cursor: default; }
+.pagination-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.pagination-btn svg { width: 12px; height: 12px; }
+.pagination-ellipsis { min-width: 20px; text-align: center; color: #94a3b8; user-select: none; }
+
+/* =====================================================================
+   Employee modal (#employeeModal) + Manage job structure modal
+   (#lookupModal) — compact design from sample_design.html.
+   Scoped to these two ids so .form-control/.form-label/.modal-* keep
+   their normal size elsewhere (e.g. the login form). Primary colour uses
+   the app's --accent tokens.
+   ===================================================================== */
+#employeeModal,
+#lookupModal {
+  --md-border: #e2e8f0;
+  --md-text: #0f172a;
+  --md-muted: #64748b;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+#employeeModal .modal-dialog { max-width: 590px; margin: 0.65rem auto; }
+#lookupModal .modal-dialog   { max-width: 480px; margin: 0.75rem auto; }
+
+#employeeModal .modal-content,
+#lookupModal .modal-content {
+  border: 1px solid var(--md-border);
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.12), 0 4px 6px -4px rgba(15, 23, 42, 0.05);
+  background: #fff;
+  overflow: hidden;
+  color: var(--md-text);
+}
+#employeeModal .modal-header,
+#lookupModal .modal-header {
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid var(--md-border);
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+#employeeModal .modal-title,
+#lookupModal .modal-title {
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 700;
+  margin: 0;
+  line-height: 1.2;
+}
+#lookupModal .modal-title i { color: var(--accent); }
+#employeeModal .btn-close,
+#lookupModal .btn-close { font-size: 0.7rem; }
+#employeeModal .modal-body { padding: 0.55rem 0.85rem; }
+#lookupModal .modal-body   { padding: 0.65rem 0.85rem; }
+#employeeModal .modal-footer,
+#lookupModal .modal-footer {
+  padding: 0.45rem 0.85rem;
+  border-top: 1px solid var(--md-border);
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+/* Buttons */
+#employeeModal .btn-ghost,
+#lookupModal .btn-ghost {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--md-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.22rem 0.6rem;
+  border-radius: 0.4rem;
+}
+#employeeModal .btn-ghost:hover,
+#lookupModal .btn-ghost:hover { background: #e2e8f0; color: var(--md-text); }
+#employeeModal .btn-accent,
+#lookupModal .btn-accent {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.22rem 0.75rem;
+  border-radius: 0.4rem;
+}
+#employeeModal .btn-outline-secondary,
+#lookupModal .btn-outline-secondary { font-size: 0.75rem; border-radius: 0.4rem; }
+
+/* Form controls */
+#employeeModal .form-label {
+  font-size: 0.71rem;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 0.15rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem;
+}
+#employeeModal .form-label > span { display: inline; }
+#employeeModal .form-control,
+#employeeModal .form-select {
+  font-size: 0.74rem;
+  padding: 0.24rem 0.48rem;
+  border-radius: 0.38rem;
+  border: 1px solid #cbd5e1;
+  color: #1e293b;
+  font-weight: 500;
+  background-color: #fff;
+  height: auto;
+  min-height: 28px;
+  line-height: 1.3;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+#employeeModal .form-control:focus,
+#employeeModal .form-select:focus,
+#lookupModal .form-control:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  outline: none;
+}
+#employeeModal .req-text { color: #ef4444; font-weight: 700; }
+#employeeModal .form-text-hint { font-size: 0.67rem; color: var(--md-muted); line-height: 1.25; }
+#employeeModal .list-group-item { font-size: 0.74rem; padding: 0.3rem 0.55rem; }
+
+/* Section cards */
+#employeeModal .employee-section-box {
+  background: #f8fafc;
+  border: 1px solid var(--md-border);
+  border-radius: 0.45rem;
+  padding: 0.4rem 0.55rem;
+}
+#employeeModal .employee-section-title {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--md-muted);
+  margin-bottom: 0.35rem;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+#employeeModal .employee-section-title i { color: var(--accent); }
+
+/* Position/Department/Business unit labels: "manage" icon button opening
+   #lookupModal on the matching tab (openLookupManager() in employees.js). */
+#employeeModal .label-with-action { width: 100%; }
+#employeeModal .label-action-btn {
+  width: auto;
+  height: auto;
+  background: transparent;
+  border: none;
+  padding: 0 0.2rem;
+  color: var(--md-muted);
+  border-radius: 3px;
+  line-height: 1;
+}
+#employeeModal .label-action-btn:hover { color: var(--accent); background: #f1f5f9; }
+#employeeModal .label-action-btn svg { width: 12px; height: 12px; }
+
+/* ---- #lookupModal ---- */
+#lookupModal .nav-tabs {
+  border-bottom: 1px solid var(--md-border);
+  gap: 0.25rem;
+  padding-bottom: 0.25rem;
+  font-size: 0.73rem;
+}
+#lookupModal .nav-tabs .nav-link {
+  font-size: 0.73rem;
+  font-weight: 600;
+  color: var(--md-muted);
+  padding: 0.28rem 0.65rem;
+  border-radius: 0.4rem;
+  border: 1px solid transparent;
+  background: transparent;
+  transition: all 0.15s ease;
+}
+#lookupModal .nav-tabs .nav-link:hover { color: #1e293b; background: #f1f5f9; }
+#lookupModal .nav-tabs .nav-link.active {
+  color: var(--accent-dark);
+  background: var(--accent-soft);
+  border-color: var(--accent-soft);
+}
+
+#lookupModal .lookup-manage-form {
+  background: #f8fafc;
+  border: 1px solid var(--md-border);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.55rem;
+  margin-top: 0.55rem;
+}
+#lookupModal .lookup-manage-form .input-group { margin-top: 0 !important; }
+#lookupModal .lookup-manage-form .form-control {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.55rem;
+  border-color: #cbd5e1;
+}
+#lookupModal .lookup-hod-label { font-size: 0.68rem; font-weight: 600; color: #475569; }
+
+#lookupModal .lookup-manage-list {
+  margin-top: 0.55rem;
+  max-height: 230px;
+  overflow-y: auto;
+  border: none;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding-right: 0.15rem;
+}
+#lookupModal .lookup-manage-list::-webkit-scrollbar { width: 4px; }
+#lookupModal .lookup-manage-list::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+#lookupModal .lookup-manage-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.32rem 0.55rem;
+  background: #fff;
+  border: 1px solid var(--md-border);
+  border-radius: 0.4rem;
+  transition: all 0.15s ease;
+}
+#lookupModal .lookup-manage-row:last-child { border-bottom: 1px solid var(--md-border); }
+#lookupModal .lookup-manage-row:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  transform: translateY(-0.5px);
+}
+#lookupModal .lookup-manage-name {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #1e293b;
+  flex-grow: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#lookupModal .lookup-manage-row.is-disabled .lookup-manage-name { color: var(--md-muted); }
+#lookupModal .lookup-manage-empty { font-size: 0.75rem; padding: 0.8rem 0.5rem; }
+#lookupModal .lookup-manage-row-actions { display: flex; align-items: center; gap: 0.2rem; }
+#lookupModal .lookup-manage-row-actions .btn-icon-only {
+  width: auto;
+  height: auto;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 0.3rem;
+  color: var(--md-muted);
+  padding: 0.18rem 0.28rem;
+  transition: all 0.15s ease;
+}
+#lookupModal .lookup-manage-row-actions .btn-icon-only:hover { background: #e2e8f0; color: var(--md-text); }
+#lookupModal .lookup-manage-row-actions .btn-icon-only[data-action="toggle"]:hover {
+  background: #fee2e2;
+  color: #dc2626;
+  border-color: #fecaca;
+}
+#lookupModal .lookup-manage-row-actions .btn-icon-only svg { width: 12px; height: 12px; }
+#lookupModal .status-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.1rem 0.45rem;
+  line-height: 1.2;
+}
+
+/* =====================================================================
+   Collapsible filter toolbar (#viewListContainer) — design from
+   collapsible_filter_redesign.html. Scoped to #viewListContainer so it
+   doesn't depend on (or leak into) shared rules in styles.css.
+   ===================================================================== */
+#viewListContainer {
+  --vl-primary: #2563eb;
+  --vl-primary-subtle: #eff6ff;
+  --vl-primary-border: #bfdbfe;
+}
+#viewListContainer .filter-top-toolbar {
+  padding: 0.65rem 0.95rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--vl-border-light);
+  background: #fff;
+}
+#viewListContainer .toolbar-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+#viewListContainer .toolbar-title {
+  font-size: 0.83rem;
+  font-weight: 700;
+  color: var(--vl-text);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+#viewListContainer #viewListMeta {
+  font-size: 0.67rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+#viewListContainer #viewListMeta:empty { display: none; }
+#viewListContainer .btn-toggle-filters {
+  background: #f8fafc;
+  border: 1px solid var(--vl-border);
+  color: #334155;
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 0.3rem 0.7rem;
+  border-radius: var(--vl-radius-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+#viewListContainer .btn-toggle-filters:hover { background: #f1f5f9; color: var(--vl-text); border-color: #cbd5e1; }
+#viewListContainer .btn-toggle-filters[aria-expanded="true"] {
+  background: var(--vl-primary-subtle);
+  color: var(--vl-primary);
+  border-color: var(--vl-primary-border);
+}
+
+#viewListContainer #filtersCollapse {
+  background: #fafbfc;
+  border-bottom: 1px solid var(--vl-border);
+}
+#viewListContainer .filter-inner-bar {
+  padding: 0.65rem 0.95rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+#viewListContainer .filter-chip-btn {
+  background: #fff;
+  border: 1px solid var(--vl-border);
+  color: #334155;
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 0.28rem 0.65rem;
+  border-radius: var(--vl-radius-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  transition: all 0.15s ease;
+}
+#viewListContainer .filter-chip-btn:hover { background: #f8fafc; border-color: #cbd5e1; color: var(--vl-text); }
+#viewListContainer .filter-chip-btn:focus,
+#viewListContainer .filter-chip-btn.show {
+  border-color: var(--vl-primary);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+  color: var(--vl-text);
+}
+#viewListContainer .filter-chip-btn.has-selected {
+  background: var(--vl-primary-subtle);
+  border-color: var(--vl-primary-border);
+  color: var(--vl-primary);
+}
+#viewListContainer .filter-count-badge {
+  font-size: 0.63rem;
+  font-weight: 700;
+  padding: 0.05rem 0.35rem;
+  border-radius: 9999px;
+  background: #e2e8f0;
+  color: #334155;
+  line-height: 1.2;
+}
+#viewListContainer .filter-chip-btn.has-selected .filter-count-badge { background: var(--vl-primary); color: #fff; }
+
+#viewListContainer .filter-multiselect-menu {
+  width: 230px;
+  border-radius: var(--vl-radius-md);
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.12), 0 4px 6px -4px rgba(15, 23, 42, 0.05);
+  border: 1px solid var(--vl-border);
+  padding: 0;
+  overflow: hidden;
+  margin-top: 4px !important;
+}
+#viewListContainer .filter-multiselect-header {
+  padding: 0.45rem 0.75rem;
+  font-size: 0.69rem;
+  font-weight: 700;
+  color: var(--vl-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--vl-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f8fafc;
+}
+#viewListContainer .btn-link-clear {
+  background: none;
+  border: none;
+  color: #ef4444;
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+#viewListContainer .btn-link-clear:hover { text-decoration: underline; }
+#viewListContainer .filter-multiselect-list {
+  padding: 0.45rem 0.65rem;
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+#viewListContainer .filter-multiselect-list::-webkit-scrollbar { width: 4px; }
+#viewListContainer .filter-multiselect-list::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+#viewListContainer .filter-multiselect-list .form-check {
+  margin: 0;
+  padding: 0.2rem 0.35rem 0.2rem 1.6rem;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+#viewListContainer .filter-multiselect-list .form-check:hover { background-color: #f1f5f9; }
+#viewListContainer .filter-multiselect-list .form-check-input {
+  cursor: pointer;
+  margin-left: -1.35rem;
+  width: 0.88rem;
+  height: 0.88rem;
+}
+#viewListContainer .filter-multiselect-list .form-check-label {
+  font-size: 0.74rem;
+  font-weight: 500;
+  color: #334155;
+  cursor: pointer;
+  width: 100%;
+  user-select: none;
+}
+#viewListContainer .filter-multiselect-empty { font-size: 0.72rem; color: var(--vl-subtle); padding: 0.25rem 0.35rem; }
+
+#viewListContainer .filter-select-sm {
+  background-color: #fff;
+  border: 1px solid var(--vl-border);
+  border-radius: var(--vl-radius-sm);
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #334155;
+  padding: 0.28rem 1.8rem 0.28rem 0.65rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  cursor: pointer;
+  height: auto;
+}
+#viewListContainer .filter-select-sm:focus {
+  border-color: var(--vl-primary);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+  outline: none;
+}
+
+#viewListContainer .portal-linked-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: #fff;
+  border: 1px solid var(--vl-border);
+  padding: 0.22rem 0.65rem;
+  margin: 0;
+  min-height: 0;
+  border-radius: var(--vl-radius-sm);
+  cursor: pointer;
+  user-select: none;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  transition: all 0.15s ease;
+}
+#viewListContainer .portal-linked-wrap:hover { border-color: #cbd5e1; background: #f8fafc; }
+#viewListContainer .portal-linked-wrap .form-check-input {
+  width: 1.55rem;
+  height: 0.88rem;
+  cursor: pointer;
+  margin: 0;
+  float: none;
+}
+#viewListContainer .portal-linked-label {
+  font-size: 0.73rem;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+#viewListContainer .btn-clear-filters {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--vl-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.26rem 0.6rem;
+  border-radius: var(--vl-radius-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-left: auto;
+}
+#viewListContainer .btn-clear-filters:hover:not(:disabled) { background: #fee2e2; color: #dc2626; border-color: #fecaca; }
+#viewListContainer .btn-clear-filters:disabled { opacity: 0.4; cursor: not-allowed; }
+
+#viewListContainer .active-tags-strip {
+  padding: 0.35rem 0.95rem;
+  background: #f1f5f9;
+  border-top: 1px dashed var(--vl-border);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+#viewListContainer .active-tags-strip.d-none { display: none !important; }
+#viewListContainer .active-tag-label {
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--vl-muted);
+  margin-right: 0.25rem;
+}
+#viewListContainer .filter-tag-pill {
+  font-size: 0.68rem;
+  font-weight: 600;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  color: #1e293b;
+  padding: 0.1rem 0.45rem;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  line-height: 1.25;
+}
+#viewListContainer .filter-tag-pill button {
+  border: none;
+  background: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0;
+  font-size: 0.8rem;
+  line-height: 1;
+}
+#viewListContainer .filter-tag-pill button:hover { color: #ef4444; }
+
+/* =====================================================================
+   Portal access dialog (openPortalAccessDialog) — scoped to .portal-modal so the shared
+   .modal-box used by the confirm / date-prompt dialogs is unaffected.
+   ===================================================================== */
+.modal-box.portal-modal {
+  --pm-border: #e2e8f0;
+  --pm-muted: #64748b;
+  --pm-primary: #2563eb;
+  --pm-primary-hover: #1d4ed8;
+  --pm-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  width: 100%;
+  max-width: 450px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--pm-border);
+  border-radius: 14px;
+  text-align: left;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+.portal-modal .modal-box-header {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 0.5rem;
+  padding: 0.85rem 1rem 0.65rem;
+  border-bottom: 1px solid var(--pm-border);
+  background: #fff;
+}
+.portal-modal h3 {
+  display: flex; align-items: center; gap: 0.4rem;
+  margin: 0 0 0.15rem; font-size: 0.95rem; font-weight: 700; line-height: 1.25; color: #0f172a;
+}
+.portal-modal h3 i { color: var(--pm-primary); font-size: 1rem; }
+.portal-modal .employee-profile-strip { display: flex; align-items: center; gap: 0.45rem; margin-top: 0.25rem; }
+.portal-modal .emp-avatar-badge {
+  width: 22px; height: 22px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: 1px solid #bfdbfe; background: #eff6ff;
+  color: var(--pm-primary); font-size: 0.65rem; font-weight: 700;
+}
+.portal-modal .employee-name-meta { display: flex; align-items: center; gap: 0.3rem; font-size: 0.74rem; font-weight: 600; color: #334155; }
+.portal-modal .employee-id-tag {
+  padding: 0.05rem 0.35rem; border: 1px solid var(--pm-border); border-radius: 4px; background: #f1f5f9;
+  font-family: var(--pm-mono); font-size: 0.64rem; font-weight: 600; color: var(--pm-muted);
+}
+.portal-modal .status-badge.portal-badge { white-space: nowrap; }
+
+.portal-modal .modal-box-body { padding: 0.85rem 1rem; }
+.portal-modal .credential-card {
+  display: flex; flex-direction: column; gap: 0.55rem;
+  margin-bottom: 0.65rem; padding: 0.65rem 0.75rem;
+  border: 1px solid var(--pm-border); border-radius: 10px; background: #fafbfc;
+}
+/* #employeeModal .form-label (id specificity) sets justify-content: space-between, which pushed the
+   icon and text apart when the dialog is nested inside #employeeModal — pin labels to the left. */
+.portal-modal .form-label,
+#employeeModal .modal-box.portal-modal .form-label {
+  display: flex; align-items: center; justify-content: flex-start; gap: 0.25rem;
+  margin-bottom: 0.2rem; font-size: 0.68rem; font-weight: 700; text-align: left;
+  letter-spacing: 0.04em; text-transform: uppercase; color: var(--pm-muted);
+}
+.portal-modal .form-control-sm {
+  height: 32px; padding: 0.32rem 0.55rem;
+  border: 1px solid #cbd5e1; border-radius: 6px; background: #fff;
+  font-size: 0.77rem; font-weight: 500; color: #1e293b;
+}
+.portal-modal .form-control-sm:read-only { background: #fff; color: #0f172a; cursor: default; }
+.portal-modal .form-control.font-monospace {
+  font-family: var(--pm-mono) !important; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.04em; color: #1e293b;
+}
+.portal-modal .credential-action-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0 0.55rem; border: 1px solid #cbd5e1; background: #fff; color: #475569;
+  font-size: 0.78rem; cursor: pointer; transition: all 0.15s ease;
+}
+.portal-modal .credential-action-btn:hover { background: #f1f5f9; color: var(--pm-primary); border-color: #94a3b8; }
+.portal-modal .credential-action-btn:active { background: #e2e8f0; transform: scale(0.97); }
+
+.portal-modal .copy-success-tooltip {
+  position: absolute; top: -24px; right: 0; z-index: 10;
+  padding: 0.1rem 0.4rem; border-radius: 4px; background: #0f172a; color: #fff;
+  font-size: 0.62rem; font-weight: 600; white-space: nowrap; pointer-events: none;
+  opacity: 0; transform: translateY(4px); transition: all 0.15s ease;
+}
+.portal-modal .copy-success-tooltip.show { opacity: 1; transform: translateY(0); }
+
+.portal-modal .security-notice-callout {
+  display: flex; align-items: flex-start; gap: 0.45rem;
+  padding: 0.45rem 0.6rem; border: 1px solid #fef3c7; border-radius: 6px; background: #fffbeb;
+}
+.portal-modal .security-notice-callout i { flex-shrink: 0; margin-top: 0.05rem; color: #d97706; font-size: 0.85rem; }
+.portal-modal .security-notice-callout p { margin: 0; font-size: 0.69rem; font-weight: 500; line-height: 1.35; color: #92400e; }
+.portal-modal .portal-note { font-size: 0.69rem; line-height: 1.35; color: var(--pm-muted); }
+
+.portal-modal .modal-actions {
+  display: flex; align-items: center; justify-content: flex-end; gap: 0.45rem;
+  margin: 0; padding: 0.55rem 1rem; border-top: 1px solid var(--pm-border); background: #f8fafc;
+}
+.portal-modal .btn-accent {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.28rem 0.75rem; border: 1px solid var(--pm-primary); border-radius: 6px;
+  background: var(--pm-primary); color: #fff; font-size: 0.74rem; font-weight: 600;
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.2); transition: all 0.15s ease;
+}
+.portal-modal .btn-accent:hover { background: var(--pm-primary-hover); border-color: var(--pm-primary-hover); color: #fff; }
+.portal-modal .btn-outline-secondary {
+  padding: 0.28rem 0.65rem; border-color: #cbd5e1; border-radius: 6px;
+  color: #475569; font-size: 0.74rem; font-weight: 600; transition: all 0.15s ease;
+}
+.portal-modal .btn-outline-secondary:hover { background: #f1f5f9; border-color: #94a3b8; color: #0f172a; }
+.portal-modal .btn-rose { font-size: 0.74rem; padding: 0.28rem 0.75rem; border-radius: 6px; }
+

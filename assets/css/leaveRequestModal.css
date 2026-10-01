@@ -1,0 +1,288 @@
+/* =====================================================================
+   ESS — "New / edit leave request" modal (#leaveRequestModal)
+   Shared by leaves.html and calendar.html (same static markup, behavior
+   in assets/js/leaveRequestModal.js). Load AFTER styles.css and the
+   page's own CSS. Needs bootstrap-icons for the .bi icons.
+
+   Design copied from sample_design.html. Every rule is scoped to this
+   modal (.modal-leave-request / #leaveRequestModal), so its compact
+   blue look does not leak into the rest of the app.
+   To retheme, change the --lrm-* tokens below.
+
+   Elements the JS fills in / toggles:
+     #leaveRuleInfo   balance + rules box under Leave type
+                      (.is-muted = neutral, .is-danger = blocked)
+     #daysPreview     "Total Requested" pill (.is-error = bad range)
+     #capUsageInfo    "X of N days used" line (amber; .text-danger = over)
+   ===================================================================== */
+
+.modal-leave-request {
+  --lrm-border: #e2e8f0;
+  --lrm-text: #0f172a;
+  --lrm-muted: #64748b;
+  --lrm-primary: #2563eb;
+  --lrm-primary-hover: #1d4ed8;
+}
+
+/* ---------------------------------------------------------------- */
+/* Dialog frame                                                      */
+/* ---------------------------------------------------------------- */
+.modal-dialog-compact {
+  max-width: 440px;
+  margin: 0.85rem auto;
+}
+
+.modal-leave-request {
+  border: 1px solid var(--lrm-border);
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.12), 0 4px 6px -4px rgba(15, 23, 42, 0.05);
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.modal-leave-request .modal-header-compact {
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid var(--lrm-border);
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.modal-leave-request .modal-header-compact .modal-title {
+  font-family: var(--font-body);   /* styles.css gives h5 the display font */
+  font-size: 0.88rem;
+  font-weight: 700;
+  letter-spacing: normal;
+  color: var(--lrm-text);
+  margin: 0;
+  line-height: 1.2;
+}
+
+.modal-leave-request .modal-body {
+  padding: 0.65rem 0.85rem;
+  overflow-y: visible;
+}
+
+.modal-leave-request .modal-footer-compact {
+  padding: 0.45rem 0.85rem;
+  border-top: 1px solid var(--lrm-border);
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+/* ---------------------------------------------------------------- */
+/* Labels, controls                                                  */
+/* ---------------------------------------------------------------- */
+.modal-leave-request .form-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 0.2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+.modal-leave-request .req-text {
+  color: #ef4444;
+  font-weight: 700;
+}
+
+.modal-leave-request .form-control-sm,
+.modal-leave-request .form-select-sm {
+  font-size: 0.77rem;
+  padding: 0.28rem 0.5rem;
+  border-radius: 0.4rem;
+  border: 1px solid #cbd5e1;
+  color: #1e293b;
+  font-weight: 500;
+  background-color: #ffffff;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.modal-leave-request .form-select-sm {
+  padding-right: 1.75rem;   /* room for the caret; the shorthand above resets it */
+}
+.modal-leave-request .form-control-sm:focus,
+.modal-leave-request .form-select-sm:focus {
+  border-color: var(--lrm-primary);
+  box-shadow: 0 0 0 2.5px rgba(37, 99, 235, 0.15);
+  outline: none;
+}
+
+#reasonInput {
+  resize: none;
+  min-height: 48px;
+}
+
+/* ---------------------------------------------------------------- */
+/* Requesting for / editing banner                                   */
+/* ---------------------------------------------------------------- */
+#onBehalfOfField {
+  margin-bottom: 0.55rem;
+  background: #f8fafc;
+  border: 1px solid var(--lrm-border);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.55rem;
+}
+#onBehalfOfHint {
+  font-size: 0.66rem;
+  color: #64748b;
+  margin-top: 0.25rem;
+  line-height: 1.2;
+}
+
+#editingForBanner {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 0.45rem;
+  padding: 0.35rem 0.55rem;
+  margin-bottom: 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #1e40af;
+}
+
+/* ---------------------------------------------------------------- */
+/* Balance / rules box under "Leave type"                            */
+/* ---------------------------------------------------------------- */
+#leaveRuleInfo {
+  margin-top: 0.25rem;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 0.4rem;
+  padding: 0.25rem 0.45rem;
+  font-size: 0.69rem;
+  color: #166534;
+  line-height: 1.25;
+}
+#leaveRuleInfo strong {
+  color: #14532d;
+  font-weight: 700;
+}
+/* Not a "good news" state: loading, or only the back-date / notice rules */
+#leaveRuleInfo.is-muted {
+  background: #f8fafc;
+  border-color: var(--lrm-border);
+  color: #475569;
+}
+#leaveRuleInfo.is-muted strong { color: var(--lrm-text); }
+/* Not eligible / would go below the allowed minimum */
+#leaveRuleInfo.is-danger {
+  background: #fff1f2;
+  border-color: #fecdd3;
+  color: #9f1239;
+}
+#leaveRuleInfo.is-danger strong { color: #881337; }
+
+/* ---------------------------------------------------------------- */
+/* Dates                                                             */
+/* ---------------------------------------------------------------- */
+.date-selection-box {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.55rem;
+  margin-top: 0.1rem;
+}
+
+#daysPreview {
+  empty-cells: hide;
+}
+#daysPreview:not(:empty) {
+  margin-top: 0.15rem;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 0.4rem;
+  padding: 0.28rem 0.55rem;
+  font-size: 0.73rem;
+  font-weight: 600;
+  color: #0f172a;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+#daysPreview.is-error:not(:empty) {
+  background: #fff1f2;
+  border-color: #fecdd3;
+  color: #9f1239;
+}
+
+#capUsageInfo:not(.hidden) {
+  font-size: 0.68rem;
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fef3c7;
+  padding: 0.25rem 0.45rem;
+  border-radius: 0.35rem;
+  margin-top: 0.3rem;
+  line-height: 1.2;
+}
+#capUsageInfo.text-danger:not(.hidden) {
+  background: #fff1f2;
+  border-color: #fecdd3;
+}
+
+/* ---------------------------------------------------------------- */
+/* Admin manual-days override                                        */
+/* ---------------------------------------------------------------- */
+#manualDaysField {
+  background: #f8fafc;
+  border: 1px dashed #e2e8f0;
+  border-radius: 0.45rem;
+  padding: 0.35rem 0.55rem;
+}
+#manualDaysField .form-check-label {
+  font-size: 0.71rem;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+}
+#manualDaysField .form-check-input {
+  width: 0.85rem;
+  height: 0.85rem;
+  margin-top: 0.12rem;
+  cursor: pointer;
+}
+#manualDaysInputWrap .form-text {
+  font-size: 0.65rem;
+  color: #64748b;
+  line-height: 1.2;
+}
+
+/* ---------------------------------------------------------------- */
+/* Footer buttons                                                    */
+/* ---------------------------------------------------------------- */
+.modal-leave-request .btn-ghost {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--lrm-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.22rem 0.6rem;
+  border-radius: 0.4rem;
+  transition: all 0.15s ease;
+}
+.modal-leave-request .btn-ghost:hover {
+  background: #e2e8f0;
+  color: var(--lrm-text);
+}
+
+.modal-leave-request .btn-accent {
+  background-color: var(--lrm-primary);
+  border: 1px solid var(--lrm-primary);
+  color: #ffffff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.22rem 0.75rem;
+  border-radius: 0.4rem;
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.2);
+  transition: all 0.15s ease;
+}
+.modal-leave-request .btn-accent:hover,
+.modal-leave-request .btn-accent:focus {
+  background-color: var(--lrm-primary-hover);
+  border-color: var(--lrm-primary-hover);
+  color: #ffffff;
+}

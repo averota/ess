@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard · ESS</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="../assets/css/styles.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<link href="../assets/css/dashboard.css" rel="stylesheet">
+<link href="../assets/css/leaveRequestModal.css" rel="stylesheet">
+<link href="../assets/css/leaveDetailModal.css" rel="stylesheet">
+<!-- ESS sidebar: apply the remembered open/collapsed state before first paint (see styles.css .sidebar-open-init) -->
+<script>try{if(localStorage.getItem('ess.sidebar.open')==='1')document.documentElement.classList.add('sidebar-open-init')}catch(e){}</script>
+</head>
+<body data-page="dashboard">
+
+<div class="app-shell" id="appShell">
+  <div class="app-main">
+    <header class="page-topbar">
+      <button type="button" class="sidebar-toggle-btn" id="sidebarToggle" aria-expanded="false" aria-label="Toggle menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 6h18M3 12h18M3 18h18"></path>
+        </svg>
+      </button>
+      <h1 class="page-title">Dashboard</h1>
+    </header>
+
+    <main class="page-content">
+      <div class="page-wrap">
+
+        <!-- Shown only when Supabase isn't configured / a critical load fails -->
+        <div class="panel panel-error hidden" id="dashError"></div>
+
+        <!-- ================= HERO ================= -->
+        <section class="dash-hero">
+          <div>
+            <div class="dash-hero-badges">
+              <span class="dash-hero-badge">Employee Self Service</span>
+              <span class="dash-hero-badge dash-hero-badge--mono" id="dashCycleBadge">Cycle: …</span>
+            </div>
+            <h2 id="dashGreeting">Welcome back</h2>
+            <p id="dashSubtext">Loading your profile…</p>
+          </div>
+          <div class="dash-hero-actions">
+            <button type="button" class="btn dash-btn-light" id="dashRequestLeaveBtn" disabled title="Loading the request form…">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"></rect><path d="M16 2v4M8 2v4M3 10h18M12 14v4M10 16h4"></path></svg>
+              Request Leave
+            </button>
+            <a class="btn dash-btn-outline" href="leaves.html">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18M5 7l7-4 7 4M5 7l-3 8a4 4 0 0 0 6 0L5 7zM19 7l-3 8a4 4 0 0 0 6 0l-3-8z"></path></svg>
+              View Requests
+            </a>
+          </div>
+        </section>
+
+        <!-- ================= QUICK STATS ================= -->
+        <section class="stats-grid" aria-label="Quick stats">
+          <div class="stat-card stat-card--accent">
+            <div class="stat-card-top">
+              <span class="stat-card-label">Active employees</span>
+              <span class="stat-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"></path></svg></span>
+            </div>
+            <div class="stat-card-value is-loading" id="statHeadcount">Loading…</div>
+          </div>
+          <div class="stat-card stat-card--warning">
+            <div class="stat-card-top">
+              <span class="stat-card-label">Pending requests</span>
+              <span class="stat-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg></span>
+            </div>
+            <div class="stat-card-value is-loading" id="statPending">Loading…</div>
+          </div>
+          <div class="stat-card stat-card--info">
+            <div class="stat-card-top">
+              <span class="stat-card-label">On leave today</span>
+              <span class="stat-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"></path></svg></span>
+            </div>
+            <div class="stat-card-value is-loading" id="statAway">Loading…</div>
+          </div>
+          <div class="stat-card stat-card--violet">
+            <div class="stat-card-top">
+              <span class="stat-card-label">Holidays · next 30 days</span>
+              <span class="stat-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg></span>
+            </div>
+            <div class="stat-card-value is-loading" id="statHolidays">Loading…</div>
+          </div>
+        </section>
+
+        <!-- ================= MY LEAVE BALANCES ================= -->
+        <div class="dash-section-title" id="dashBalanceHead">
+          <h3>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"></rect><path d="M2 10h20"></path></svg>
+            My Leave Balances
+          </h3>
+          <span class="meta" id="dashBalanceMeta">Current cycle</span>
+        </div>
+        <div class="stats-grid" id="dashBalanceGrid">
+          <div class="empty-state">Loading balances…</div>
+        </div>
+
+        <!-- ================= WIDGETS ================= -->
+        <div class="row g-3">
+
+          <!-- Pending requests -->
+          <div class="col-12 col-lg-4">
+            <div class="dash-card">
+              <div class="dash-card-head">
+                <div class="dash-card-title">
+                  <span class="dash-card-icon dash-card-icon--warning"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg></span>
+                  <div>
+                    <h4>Pending Requests</h4>
+                    <small>Waiting for a decision</small>
+                  </div>
+                </div>
+                <span class="dash-count" id="dashPendingCount">0</span>
+              </div>
+              <div class="dash-card-body" id="dashPendingList">
+                <div class="empty-state">Loading…</div>
+              </div>
+              <div class="dash-card-foot">
+                <a class="btn btn-ghost" href="leaves.html">Open approval desk &rarr;</a>
+              </div>
+            </div>
+          </div>
+
+          <!-- Team absence -->
+          <div class="col-12 col-lg-4">
+            <div class="dash-card">
+              <div class="dash-card-head">
+                <div class="dash-card-title">
+                  <span class="dash-card-icon dash-card-icon--info"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"></path></svg></span>
+                  <div>
+                    <h4>Team Absence</h4>
+                    <small>Current &amp; upcoming approved leave</small>
+                  </div>
+                </div>
+                <span class="dash-date-chip" id="dashTodayChip"></span>
+              </div>
+              <div class="dash-card-body" id="dashAbsenceList">
+                <div class="empty-state">Loading…</div>
+              </div>
+              <div class="dash-card-foot">
+                <a class="btn btn-ghost" href="calendar.html">Open company calendar &rarr;</a>
+              </div>
+            </div>
+          </div>
+
+          <!-- Policies + holidays -->
+          <div class="col-12 col-lg-4">
+            <div class="dash-card">
+              <div class="dash-card-head">
+                <div class="dash-card-title">
+                  <span class="dash-card-icon dash-card-icon--success"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><path d="m9 12 2 2 4-4"></path></svg></span>
+                  <div>
+                    <h4>Working Policies</h4>
+                    <small>Company-wide rules</small>
+                  </div>
+                </div>
+                <a class="btn btn-sm btn-link p-0 d-none" id="dashPolicySettingsLink" href="policies.html" style="font-size:.78rem;font-weight:600;text-decoration:none;">Settings &rarr;</a>
+              </div>
+              <div class="dash-card-body" style="padding-top:14px;padding-bottom:14px;">
+                <div class="dash-policy-row"><span>Standard monthly days</span><strong id="dashStdDays">—</strong></div>
+                <div class="dash-policy-row"><span>Leave year cutoff</span><strong id="dashCutoff">—</strong></div>
+
+                <span class="dash-mini-label">Weekly working pattern</span>
+                <div class="dash-week" id="dashWeek"></div>
+
+                <span class="dash-mini-label">Next official holidays</span>
+                <div id="dashHolidayList"><div class="empty-state">Loading…</div></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <aside class="app-sidebar" id="sidebarRoot"></aside>
+</div>
+
+<!-- New / edit / on-behalf-of leave request -->
+<div class="modal fade" id="leaveRequestModal" tabindex="-1" aria-labelledby="leaveRequestModalTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-compact">
+    <div class="modal-content modal-leave-request">
+
+      <form id="leaveRequestForm">
+        <div class="modal-header modal-header-compact">
+          <h5 class="modal-title" id="leaveRequestModalTitle">New leave request</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" style="font-size: 0.7rem;"></button>
+        </div>
+
+        <div class="modal-body">
+
+          <!-- Requesting for (on behalf of) -->
+          <div id="onBehalfOfField" class="hidden">
+            <label class="form-label" for="requestEmployeeSelect">
+              <i class="bi bi-person-fill-gear text-secondary"></i> Requesting for
+            </label>
+            <select class="form-select form-select-sm" id="requestEmployeeSelect"></select>
+            <p id="onBehalfOfHint" class="mb-0"></p>
+          </div>
+
+          <!-- Banner shown when editing a request -->
+          <div id="editingForBanner" class="hidden">
+            <p id="editingForText" class="mb-0"></p>
+          </div>
+
+          <div class="row g-2">
+            <div class="col-12">
+              <label class="form-label" for="leaveTypeInput">
+                Leave type <span class="req-text">*</span>
+              </label>
+              <select class="form-select form-select-sm" id="leaveTypeInput" required></select>
+              <div id="leaveRuleInfo" class="form-text hidden"></div>
+            </div>
+
+            <div class="col-12">
+              <div class="date-selection-box">
+                <div class="row g-2">
+                  <div class="col-7">
+                    <label class="form-label" for="startDateInput">Start date <span class="req-text">*</span></label>
+                    <input type="date" class="form-control form-control-sm" id="startDateInput" required>
+                  </div>
+                  <div class="col-5">
+                    <label class="form-label" for="startHalfDayInput">Start session</label>
+                    <select class="form-select form-select-sm" id="startHalfDayInput">
+                      <option value="full" selected>Full day</option>
+                      <option value="am">AM (morning)</option>
+                      <option value="pm">PM (afternoon)</option>
+                    </select>
+                  </div>
+
+                  <div class="col-7">
+                    <label class="form-label" for="endDateInput">End date <span class="req-text">*</span></label>
+                    <input type="date" class="form-control form-control-sm" id="endDateInput" required>
+                  </div>
+                  <div class="col-5">
+                    <label class="form-label" for="endHalfDayInput">End session</label>
+                    <select class="form-select form-select-sm" id="endHalfDayInput">
+                      <option value="full" selected>Full day</option>
+                      <option value="am">AM (morning)</option>
+                      <option value="pm">PM (afternoon)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="col-12">
+              <div id="daysPreview"></div>
+              <div id="capUsageInfo" class="form-text hidden"></div>
+            </div>
+
+            <div class="col-12 hidden" id="manualDaysField">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="manualDaysToggle">
+                <label class="form-check-label" for="manualDaysToggle">
+                  Manually set total days (admin override)
+                </label>
+              </div>
+              <div class="row g-2 mt-1 hidden" id="manualDaysInputWrap">
+                <div class="col-6">
+                  <label class="form-label" for="manualDaysInput">Total days</label>
+                  <input type="number" class="form-control form-control-sm" id="manualDaysInput" step="0.5" min="0" max="366">
+                </div>
+                <div class="col-12">
+                  <p class="form-text mb-0">Bypasses working-day calculation — entered value is saved as-is.</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="col-12">
+              <label class="form-label" for="reasonInput">Reason</label>
+              <textarea class="form-control form-control-sm" id="reasonInput" rows="2" placeholder="Optional — a short note for your supervisor"></textarea>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="modal-footer modal-footer-compact">
+          <button type="button" class="btn btn-ghost btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-accent btn-sm" id="leaveRequestSubmitBtn">
+            <i class="bi bi-send me-1"></i>Submit request
+          </button>
+        </div>
+      </form>
+
+    </div>
+  </div>
+</div>
+
+<!-- Leave details. Same markup as leaves.html; footer actions are filled in by renderDetailActions() below. -->
+<div class="modal fade" id="leaveDetailModal" tabindex="-1" aria-labelledby="leaveDetailTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-compact">
+    <div class="modal-content modal-leave-detail">
+      <div class="modal-header modal-header-compact">
+        <div class="detail-title-wrap">
+          <h5 class="modal-title" id="leaveDetailTitle">Leave details</h5>
+          <span class="status-badge" id="leaveDetailStatus"></span>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="leaveDetailBody"></div>
+      <div class="modal-footer modal-footer-compact">
+        <div class="detail-actions" id="leaveDetailActions"></div>
+        <!-- Only shown when the current user has no actions on this request. -->
+        <button type="button" class="btn btn-ghost btn-sm hidden" id="leaveDetailCloseBtn" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../assets/config.js"></script>
+<script src="../assets/js/supabaseClient.js"></script>
+<script src="../assets/js/sidebar.js"></script>
+<script src="../assets/js/leaveDetail.js"></script>
+<script src="../assets/js/leaveRequestModal.js"></script>
+<script src="../assets/js/dashboard.js"></script>
+</body>
+</html>
