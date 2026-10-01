@@ -306,3 +306,12 @@ create policy room_bookings_delete_own
   on public.room_bookings for delete
   to authenticated
   using (booked_by = auth.uid() or public.is_admin());
+
+-- ---------------------------------------------------------------------
+-- Realtime: publish this file's tables (see ess_enable_realtime in 01)
+-- ---------------------------------------------------------------------
+select public.ess_enable_realtime(array['holidays', 'rooms', 'room_bookings']);
+
+-- DELETE events carry only the primary key by default; FULL also sends room_id /
+-- booking_date / recurrence_group_id so the client can tell which series changed.
+alter table public.room_bookings replica identity full;

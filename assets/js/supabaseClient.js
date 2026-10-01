@@ -61,3 +61,137 @@ const sb = SUPABASE_CONFIGURED
         }
       }
     };
+
+// ---------------------------------------------------------------------
+// Live updates (Supabase Realtime)
+//
+// Every page already loads this file, so every page can call:
+//
+//   RealtimeSync.watch({
+//     name:     'leaves',                       // channel name, unique per page
+//     tables:   ['leave_requests', ...],        // public.* tables to listen to
+//     onChange: async (changedTables) => {...}  // the page's own reload function
+//   })  -> { stop(), status() }
+//
+// Tables must be in the supabase_realtime publication; each schema file
+// (01-05) enables its own tables at the bottom via ess_enable_realtime().
+//
+//   - One channel per page, one postgres_changes listener per table.
+//   - Bursts of events collapse into one onChange call (DEBOUNCE_MS), and
+//     onChange never overlaps itself: changes that arrive mid-reload trigger
+//     exactly one follow-up run.
+//   - After a reconnect, and when a tab hidden longer than STALE_MS becomes
+//     visible again, onChange runs once with '*reconnect' / '*visibility'
+//     in changedTables to catch up on missed events.
+//   - A small pill (bottom right) shows the state: amber = connecting,
+//     green = live + time of the last refresh, red = offline (auto-retries).
+//     The same states are logged as "[realtime:<name>] ...".
+//   - RLS applies: a user only receives rows their select policy allows.
+//   - With the unconfigured stub client above, watch() is a harmless no-op.
+// ---------------------------------------------------------------------
+const RealtimeSync = (() => {
+  const DEBOUNCE_MS = 500;
+  const STALE_MS = 60 * 1000;
+  const COLORS = { connecting: '#f59e0b', live: '#16a34a', offline: '#dc2626' };
+  const LABELS = { connecting: 'Connecting…', live: 'Live', offline: 'Offline — retrying' };
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const clock = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+
+  let pill = null;   // created once, shared by every watch on the page
+  function paint(state, lastUpdate, lastChange) {
+    if (!pill) {
+      pill = document.createElement('div');
+      pill.setAttribute('role', 'status');
+      pill.setAttribute('aria-live', 'polite');
+      pill.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:1080;display:flex;align-items:center;'
+        + 'gap:6px;padding:4px 10px;border-radius:999px;font:12px/1.4 system-ui,sans-serif;'
+        + 'background:rgba(255,255,255,.95);color:#374151;box-shadow:0 1px 4px rgba(0,0,0,.2);pointer-events:none';
+      pill.innerHTML = '<span class="rt-dot" style="width:8px;height:8px;border-radius:50%"></span><span class="rt-text"></span>';
+      document.body.appendChild(pill);
+    }
+    pill.querySelector('.rt-dot').style.background = COLORS[state];
+    pill.querySelector('.rt-text').textContent = LABELS[state] + (lastUpdate ? ` · updated ${clock(lastUpdate)}` : '');
+    pill.title = lastChange ? `Last change: ${lastChange}` : '';
+  }
+
+  function watch({ name, tables, onChange }) {
+    const noop = { stop() {}, status: () => 'unavailable' };
+    if (typeof sb.channel !== 'function') {
+      console.warn(`[realtime:${name}] Supabase is not configured — live updates disabled.`);
+      return noop;
+    }
+    if (!name || !Array.isArray(tables) || !tables.length || typeof onChange !== 'function') {
+      console.error('[realtime] watch() needs { name, tables[], onChange }.');
+      return noop;
+    }
+
+    let state = 'connecting', lastUpdate = null, lastChange = '';
+    let everConnected = false, stopped = false, running = false, rerun = false;
+    let timer = null, hiddenAt = null;
+    const changed = new Set();
+
+    const setState = (s) => { state = s; console.info(`[realtime:${name}] ${s}`); paint(state, lastUpdate, lastChange); };
+
+    async function flush() {
+      if (stopped) return;
+      if (running) { rerun = true; return; }
+      running = true;
+      const batch = Array.from(changed);
+      changed.clear();
+      try {
+        await onChange(batch);
+        lastUpdate = new Date();
+        paint(state, lastUpdate, lastChange);
+      } catch (err) {
+        console.error(`[realtime:${name}] reload failed:`, err);
+      } finally {
+        running = false;
+        if (rerun) { rerun = false; schedule(); }
+      }
+    }
+    function schedule() { clearTimeout(timer); timer = setTimeout(flush, DEBOUNCE_MS); }
+
+    let channel = sb.channel(`ess-${name}`);
+    tables.forEach((table) => {
+      channel = channel.on('postgres_changes', { event: '*', schema: 'public', table }, (payload) => {
+        console.info(`[realtime:${name}] ${payload.eventType} on ${table}`, payload);
+        changed.add(table);
+        lastChange = `${table} ${payload.eventType}`;
+        schedule();
+      });
+    });
+    channel.subscribe((status, err) => {
+      if (stopped) return;
+      if (status === 'SUBSCRIBED') {
+        const reconnect = everConnected;
+        everConnected = true;
+        setState('live');
+        if (reconnect) { changed.add('*reconnect'); schedule(); }
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        if (err) console.warn(`[realtime:${name}] ${status}`, err);
+        setState('offline');   // supabase-js rejoins automatically
+      }
+    });
+
+    // Hidden tabs get their socket throttled: catch up when the user comes back.
+    const onVisibility = () => {
+      if (document.hidden) { hiddenAt = Date.now(); return; }
+      if (hiddenAt && Date.now() - hiddenAt > STALE_MS) { changed.add('*visibility'); schedule(); }
+      hiddenAt = null;
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
+    function stop() {
+      stopped = true;
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+      sb.removeChannel(channel);
+    }
+    window.addEventListener('pagehide', stop, { once: true });
+
+    paint(state, null, '');
+    return { stop, status: () => state };
+  }
+
+  return { watch };
+})();

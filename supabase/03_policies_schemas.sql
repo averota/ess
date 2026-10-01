@@ -661,3 +661,8 @@ begin
     end loop;
 end;
 $$;
+
+-- ---------------------------------------------------------------------
+-- Realtime: publish this file's tables (see ess_enable_realtime in 01)
+-- ---------------------------------------------------------------------
+select public.ess_enable_realtime(array['policy_settings', 'policy_weekly_working_days']);

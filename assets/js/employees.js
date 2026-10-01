@@ -435,7 +435,10 @@ async function init() {
     Object.keys(APPROVER_SELECTS).forEach(wireApproverSearch);
     wireLookupSearchSelects();
 
-    await Promise.all([loadStats(), loadEmployees()]);
+    await reloadEmployees();
+
+    // Live updates: any change to employees re-reads the list + stats.
+    RealtimeSync.watch({ name: 'employees', tables: ['employees'], onChange: reloadEmployees });
 }
 
 function wireEvents() {
@@ -1156,12 +1159,17 @@ async function onRefreshClick() {
     refreshListBtn.classList.add('is-refreshing');
     refreshListBtnLabel.textContent = 'Refreshing…';
     try {
-        await Promise.all([loadEmployees(), loadStats()]);
+        await reloadEmployees();
     } finally {
         refreshListBtn.classList.remove('is-refreshing');
         refreshListBtnLabel.textContent = 'Refresh';
         refreshListBtn.disabled = false;
     }
+}
+
+// List + stats together: used by init, Refresh, every save/delete/import and live updates.
+function reloadEmployees() {
+    return Promise.all([loadEmployees(), loadStats()]);
 }
 
 async function loadStats() {
@@ -1820,7 +1828,7 @@ async function onSubmitEmployee(e) {
 
     const savedId = editingEmployeeId;
     showToast(savedId ? 'Employee updated.' : 'Employee added.', 'success');
-    await Promise.all([loadEmployees(), loadStats()]);
+    await reloadEmployees();
 
     if (savedId) {
         // Editing: keep the card open (it's only closed manually). Reload it
@@ -2024,7 +2032,7 @@ function openPortalAccessDialog(empId) {
     }
 
     async function afterChange() {
-        await Promise.all([loadEmployees(), loadStats()]);
+        await reloadEmployees();
         refreshCardBadges(getEmp());
     }
 
@@ -2129,7 +2137,7 @@ async function onEndEmployment(emp) {
         return;
     }
     showToast('Last day set.', 'success');
-    await Promise.all([loadEmployees(), loadStats()]);
+    await reloadEmployees();
 }
 
 async function onReactivate(emp) {
@@ -2146,7 +2154,7 @@ async function onReactivate(emp) {
         return false;
     }
     showToast('Employee reactivated.', 'success');
-    await Promise.all([loadEmployees(), loadStats()]);
+    await reloadEmployees();
     return true; // lets the details card refresh itself
 }
 
@@ -2466,7 +2474,7 @@ async function onAppendClick() {
         setUploadPanelOpen(false);
         await loadLookups(); // new positions/departments/business units may have been created
         populateFixedSelects();
-        await Promise.all([loadEmployees(), loadStats()]);
+        await reloadEmployees();
 
         const skipped = attempted - insertedCount;
         showStatus(`<span class="num-emerald">Success — added ${insertedCount} employee(s).</span>${skipped > 0 ? ` Skipped ${skipped} row(s) that already existed.` : ''}`);
@@ -2498,7 +2506,7 @@ async function onOverwriteClick() {
         setUploadPanelOpen(false);
         await loadLookups();
         populateFixedSelects();
-        await Promise.all([loadEmployees(), loadStats()]);
+        await reloadEmployees();
         showStatus(`<span class="num-emerald">Success — table overwritten with ${insertedCount} record(s).</span>`);
     } catch (err) {
         showStatus(`<span class="num-rose">Overwrite failed: ${escapeHtml(err.message || String(err))}</span>`);

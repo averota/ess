@@ -2406,6 +2406,24 @@
     }
 
     run();
+
+    // Live updates: reload only what changed; the visible month is always re-read.
+    RealtimeSync.watch({
+      name: 'calendar',
+      tables: ['holidays', 'rooms', 'room_bookings', 'leave_requests', 'leave_request_approvals',
+               'leave_types', 'policy_weekly_working_days'],
+      onChange: async (changed) => {
+        const t = new Set(changed);
+        const all = t.has('*reconnect') || t.has('*visibility');
+        if (all || t.has('policy_weekly_working_days') || t.has('leave_types')) {
+          await loadWorkingPattern();
+          await loadLeaveTypes();
+        }
+        if (all || t.has('holidays')) await loadHolidays();
+        if (all || t.has('rooms')) await loadRooms();
+        await loadDataForView();
+      }
+    });
   }
 
   window.addEventListener('ess:ready', onEssReady);

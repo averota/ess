@@ -1035,3 +1035,38 @@ begin
     return v_count;
 end;
 $$;
+
+-- =====================================================================
+-- Realtime helper (used at the bottom of 01-05).
+-- Adds tables to the supabase_realtime publication so the browser can
+-- subscribe to their changes (assets/js/supabaseClient.js -> RealtimeSync).
+-- Idempotent; RLS still applies, so a subscriber only receives rows its
+-- select policy allows. Not callable from the API (SQL editor / migrations only).
+-- =====================================================================
+create or replace function public.ess_enable_realtime(p_tables text[])
+returns void
+language plpgsql
+set search_path = public, pg_temp
+as $$
+declare
+    t text;
+begin
+    if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+        raise notice 'Publication supabase_realtime not found — skipping realtime setup';
+        return;
+    end if;
+
+    foreach t in array p_tables loop
+        if not exists (
+            select 1 from pg_publication_tables
+            where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
+        ) then
+            execute format('alter publication supabase_realtime add table public.%I', t);
+        end if;
+    end loop;
+end;
+$$;
+
+revoke all on function public.ess_enable_realtime(text[]) from public, anon, authenticated;
+
+select public.ess_enable_realtime(array['employees']);

@@ -1706,3 +1706,8 @@ grant execute on function public.list_leave_current_approvers()                 
 grant execute on function public.review_leave_request(uuid, text, text)                 to authenticated, service_role;
 grant execute on function public.cancel_leave_request(uuid)                             to authenticated, service_role;
 grant execute on function public.set_leave_review_comment(uuid, text)                   to authenticated, service_role;
+
+-- ---------------------------------------------------------------------
+-- Realtime: publish this file's tables (see ess_enable_realtime in 01)
+-- ---------------------------------------------------------------------
+select public.ess_enable_realtime(array['leave_types', 'leave_requests', 'leave_request_approvals']);

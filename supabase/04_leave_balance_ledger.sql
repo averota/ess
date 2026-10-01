@@ -1050,3 +1050,8 @@ grant execute on function public.calculate_leave_entitlement_earned(uuid, intege
 grant execute on function public.calculate_carry_forward_in(uuid, integer, date)                                 to service_role;
 grant execute on function public.calculate_leave_balance_raw(uuid, integer, date, uuid, numeric, date)           to service_role;
 grant execute on function public.apply_prorate_rounding(numeric, text)                                           to service_role;
+
+-- ---------------------------------------------------------------------
+-- Realtime: publish this file's tables (see ess_enable_realtime in 01)
+-- ---------------------------------------------------------------------
+select public.ess_enable_realtime(array['leave_balance_adjustments']);

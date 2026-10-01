@@ -777,5 +777,16 @@
     }
 
     await loadAll();
+
+    // Live updates. loadAll() ignores calls made while it is running, so wait for it first.
+    RealtimeSync.watch({
+      name: 'dashboard',
+      tables: ['leave_requests', 'leave_request_approvals', 'leave_balance_adjustments', 'holidays',
+               'employees', 'leave_types', 'policy_settings', 'policy_weekly_working_days'],
+      onChange: async () => {
+        while (loading) await new Promise((r) => setTimeout(r, 300));
+        await loadAll();
+      }
+    });
   });
 })();

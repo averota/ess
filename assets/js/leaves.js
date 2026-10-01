@@ -510,6 +510,13 @@ async function init() {
     // so re-render now that everything is loaded.
     syncEmployeeFilterVisibility();
     applyFilters();
+
+    // Live updates: requests, approval steps, ledger adjustments or the people behind them.
+    RealtimeSync.watch({
+        name: 'leaves',
+        tables: ['leave_requests', 'leave_request_approvals', 'leave_balance_adjustments', 'employees'],
+        onChange: reloadRequests
+    });
 }
 
 function wireEvents() {
@@ -636,14 +643,20 @@ function onExportExcelClick() {
     XLSX.writeFile(workbook, `leave_requests_${teamTab ? 'team' : 'my-leave'}_${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
 
+// Reports first (they decide My leave vs Team requests), then the requests.
+// loadRequests() also re-reads the balance cards. Used by Refresh and live updates.
+async function reloadRequests() {
+    await loadMyReports();
+    await loadRequests();
+}
+
 async function onRefreshClick() {
     if (refreshListBtn.disabled) return;
     refreshListBtn.disabled = true;
     refreshListBtn.classList.add('is-refreshing');
     refreshListBtnLabel.textContent = 'Refreshing…';
     try {
-        await loadMyReports();
-        await loadRequests();
+        await reloadRequests();
     } finally {
         refreshListBtn.classList.remove('is-refreshing');
         refreshListBtnLabel.textContent = 'Refresh';
