@@ -963,32 +963,6 @@ body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
    ===================================================================== */
 .cal-gantt { --gantt-side: 200px; display: flex; flex-direction: column; flex: 1 1 auto; background: #fff; }
 
-.gantt-date-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  padding: 10px 18px;
-  background: var(--cal-s50);
-  border-bottom: 1px solid var(--cal-s200);
-}
-.gantt-date-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
-.gantt-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  border-radius: var(--cal-radius-sm);
-  background: var(--cal-brand-soft);
-  color: var(--cal-brand-dark);
-  font-size: 0.72rem;
-  font-weight: 700;
-}
-.gantt-date-label { color: var(--cal-s900); font-size: 0.86rem; font-weight: 800; }
-.gantt-hint { display: inline-flex; align-items: center; gap: 6px; color: var(--cal-s500); font-size: 0.7rem; font-weight: 600; }
-.gantt-hint-dot { width: 10px; height: 10px; border-radius: 50%; background: #10b981; }
-
 .gantt-scroll { overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--cal-s200) transparent; }
 .gantt-table { display: flex; flex-direction: column; min-width: 1100px; position: relative; }
 
@@ -1049,32 +1023,70 @@ body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
 .gantt-slot { border-right: 1px dashed var(--cal-s100); cursor: cell; transition: background-color 0.12s ease; }
 .gantt-slot:nth-child(even) { border-right: 1px solid var(--cal-s200); }
 .gantt-slot.is-booked { cursor: default; }
-.gantt-slot:not(.is-booked):hover { background: #ecfdf5; }
+.gantt-slot:not(.is-booked):not(.is-past):hover { background: #ecfdf5; }
+.gantt-slot.is-past { background: rgba(148, 163, 184, 0.14); cursor: not-allowed; }
 /* drag-select: sideways drag with mouse/pen; on touch, tap a slot (vertical scroll stays native) */
 .gantt-table { user-select: none; -webkit-user-select: none; }
 .gantt-slot { touch-action: pan-y; }
 .gantt-slot.is-selecting { background: #a7f3d0; }
 
+/* Booking block: soft tint of the room colour (--tone, set per block by calendar.js) */
 .gantt-booking-block {
+  --tone: var(--cal-brand);
   position: absolute;
-  top: 10px;
-  bottom: 10px;
+  top: 8px;
+  bottom: 8px;
   z-index: 5;
   display: flex;
   flex-direction: column;
   justify-content: center;
+  gap: 2px;
   overflow: hidden;
-  padding: 6px 10px;
-  border-left: 3.5px solid rgba(255, 255, 255, 0.65);
-  border-radius: 8px;
-  color: #fff;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--tone) 28%, #fff);
+  border-left: 3.5px solid var(--tone);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--tone) 10%, #fff);
+  color: color-mix(in srgb, var(--tone) 55%, #0f172a);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04);
   cursor: pointer;
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.2);
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  user-select: none;
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.15s cubic-bezier(0.16, 1, 0.3, 1);
 }
-.gantt-booking-block:hover { z-index: 8; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2); }
-.gantt-block-title { overflow: hidden; font-size: 0.78rem; font-weight: 700; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
-.gantt-block-subtitle { margin-top: 2px; overflow: hidden; font-size: 0.68rem; opacity: 0.92; text-overflow: ellipsis; white-space: nowrap; }
+/* soft top sheen */
+.gantt-booking-block::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0) 100%);
+  pointer-events: none;
+}
+.gantt-booking-block:hover { z-index: 12; transform: translateY(-1.5px); box-shadow: 0 6px 14px -2px rgba(15, 23, 42, 0.12), 0 2px 4px -1px rgba(15, 23, 42, 0.06); }
+.gantt-booking-block:active { transform: translateY(0); }
+
+.gantt-block-title,
+.gantt-block-subtitle { position: relative; z-index: 1; display: flex; align-items: center; min-width: 0; white-space: nowrap; line-height: 1.25; }
+.gantt-block-title { gap: 5px; font-size: 0.73rem; font-weight: 700; }
+.gantt-block-subtitle { gap: 5px; color: color-mix(in srgb, var(--tone) 80%, #334155); font-size: 0.63rem; font-weight: 600; }
+.gantt-block-title .bi { flex-shrink: 0; font-size: 0.72rem; opacity: 0.85; }
+.gantt-block-subtitle .bi { flex-shrink: 0; font-size: 0.65rem; }
+.gantt-block-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.gantt-block-subtitle .gantt-block-text:first-of-type { flex-shrink: 0; }
+
+/* "You" pill on your own bookings */
+.gantt-you-badge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--tone) 35%, #fff);
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--tone) 16%, #fff);
+  color: color-mix(in srgb, var(--tone) 65%, #0f172a);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  text-transform: uppercase;
+}
 
 /* Current-time line (today only) */
 .current-time-marker { position: absolute; top: 0; bottom: 0; z-index: 15; width: 2px; background: var(--cal-rose); pointer-events: none; }
@@ -1092,7 +1104,6 @@ body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
 
 @container holcal (max-width: 560px) {
   .cal-gantt { --gantt-side: 120px; }
-  .gantt-date-banner { padding: 8px 10px; }
   .gantt-room-corner,
   .gantt-room-sidebar { padding-left: 10px; padding-right: 8px; }
 }
@@ -1111,3 +1122,33 @@ body[data-page="calendar"] .modal-footer .btn .bi { font-size: 0.8rem; }
   line-height: 1.45;
 }
 .confirm-conflict-list li + li { margin-top: 4px; }
+
+/* Gantt on a holiday: rooms take the holiday colour, one watermark spans all of them */
+.gantt-rows { position: relative; }
+.gantt-timeline-track.is-holiday { background: var(--cal-amber-100); }
+.gantt-timeline-track.is-holiday .gantt-slot { border-right-color: var(--cal-amber-200); }
+.gantt-holiday-watermark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--gantt-side);
+  right: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.gantt-holiday-watermark span {
+  color: var(--cal-amber-900);
+  opacity: 0.16;
+  font-size: clamp(1.6rem, 4vw, 2.8rem);
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.1;
+  text-align: center;
+  text-transform: uppercase;
+  transform: rotate(-8deg);
+}

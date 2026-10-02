@@ -482,7 +482,8 @@
 
       if (!cell.otherMonth) {
         div.classList.add('is-clickable');
-        div.addEventListener('click', () => openDayModal(key));
+        // Rooms: the day opens as the Gantt timeline; Leave: the day list.
+        div.addEventListener('click', () => (mode === 'room' ? showGanttFor(key) : openDayModal(key)));
 
         const addLabel = mode === 'room' ? 'New booking' : 'New leave request';
         const addBtn = document.createElement('button');
@@ -517,7 +518,8 @@
   }
 
   // Own bookings read "You" instead of the stored display name.
-  const bookerLabel = (b) => (myUserId && b.bookedBy === myUserId ? 'You' : b.bookerName);
+  const isMine = (b) => !!myUserId && b.bookedBy === myUserId;
+  const bookerLabel = (b) => (isMine(b) ? 'You' : b.bookerName);
 
   function bookingPill(b) {
     const title = `${b.start}\u2013${b.end} \u00b7 ${b.roomName} \u2014 ${b.title} (${bookerLabel(b)})`
@@ -990,7 +992,16 @@
   }
 
   // The "+" in a cell / "New ..." in the day view: new leave request or new booking.
+  // Back-dating is admin-only: true when a booking starting at `startMin`
+  // minutes into `key` is in the past (same 5-minute grace as the form check).
+  const isBackDated = (key, startMin = 0) =>
+    !isAdmin && parseDateOnly(key).getTime() + startMin * 60000 < Date.now() - 5 * 60 * 1000;
+
   function addForDate(key) {
+    if (mode === 'room' && isBackDated(key, 24 * 60 - 1)) {
+      toast('Only admins can book a past date.', 'danger');
+      return;
+    }
     if (mode === 'room') openBookingModal(null, key);
     else goToNewLeaveRequest(key);
   }
@@ -1148,11 +1159,18 @@
   const GANTT_SLOTS = GANTT_TOTAL_MIN / SLOT_MINUTES;
   const ganttPct = (min) => ((min - GANTT_START_MIN) / GANTT_TOTAL_MIN) * 100;
 
-  function div(className, text) {
-    const el = document.createElement('div');
+  function div(className, text, tag = 'div') {
+    const el = document.createElement(tag);
     el.className = className;
     if (text !== undefined) el.textContent = text;
     return el;
+  }
+  const biIcon = (name) => div(`bi ${name}`, undefined, 'i'); // Bootstrap Icons glyph
+
+  // Open the Gantt on `key` (grid cell click, or today for the toggle button).
+  function showGanttFor(key) {
+    setViewMode('gantt');
+    setGanttDate(key); // also moves the month (and reloads its bookings) if needed
   }
 
   // Today when it falls in the month being viewed, otherwise the 1st.
@@ -1175,7 +1193,6 @@
 
   function renderGantt() {
     if (viewMode !== 'gantt' || !ganttKey) return;
-    $('#ganttDateLabel').textContent = formatDateLong(ganttKey);
     dayInput.value = ganttKey;
     calGantt.style.setProperty('--gantt-hours', String(GANTT_END_HOUR - GANTT_START_HOUR));
     calGantt.style.setProperty('--gantt-slots', String(GANTT_SLOTS));
@@ -1196,13 +1213,21 @@
     }
 
     const dayBookings = bookingsMap.get(ganttKey) || [];
+    const holiday = holidaysMap.get(ganttKey);
     const now = new Date();
     const nowMin = ganttKey === toDateKey(now) ? now.getHours() * 60 + now.getMinutes() : null;
-    ganttRows.replaceChildren(...visibleRooms.map((room) =>
-      buildGanttRow(room, dayBookings.filter((b) => b.roomId === room.id), nowMin)));
+    const rows = visibleRooms.map((room) =>
+      buildGanttRow(room, dayBookings.filter((b) => b.roomId === room.id), nowMin, !!holiday));
+    // One watermark across every room (not one per row).
+    if (holiday) {
+      const mark = div('gantt-holiday-watermark');
+      mark.appendChild(document.createElement('span')).textContent = holiday.description;
+      rows.push(mark);
+    }
+    ganttRows.replaceChildren(...rows);
   }
 
-  function buildGanttRow(room, bookings, nowMin) {
+  function buildGanttRow(room, bookings, nowMin, isHoliday) {
     const row = div('gantt-row');
     const color = colorForRoom(room.id);
 
@@ -1217,7 +1242,7 @@
     side.append(name, div('gantt-room-meta',
       [room.capacity ? `${room.capacity} seats` : '', room.location].filter(Boolean).join(' \u00b7 ')));
 
-    const track = div('gantt-timeline-track');
+    const track = div('gantt-timeline-track' + (isHoliday ? ' is-holiday' : ''));
     const ranges = bookings.map((b) => [toMinutes(b.start), toMinutes(b.end)]);
     for (let i = 0; i < GANTT_SLOTS; i++) {
       const start = GANTT_START_MIN + i * SLOT_MINUTES;
@@ -1226,6 +1251,8 @@
       slot.dataset.idx = String(i);
       if (ranges.some(([a, b]) => a < end && start < b)) {
         slot.classList.add('is-booked');
+      } else if (isBackDated(ganttKey, start)) {
+        slot.classList.add('is-past'); // not bookable (admins excepted)
       } else {
         slot.dataset.roomId = room.id;
         slot.dataset.start = minToTime(start);
@@ -1238,14 +1265,22 @@
       const from = Math.max(toMinutes(b.start), GANTT_START_MIN);
       const to = Math.min(toMinutes(b.end), GANTT_START_MIN + GANTT_TOTAL_MIN);
       if (to <= from) return; // entirely outside the window
+      // Soft tinted block: --tone (the room colour) drives fill, border, accent stripe and text (see CSS).
       const block = div('gantt-booking-block');
       block.style.left = `${ganttPct(from)}%`;
       block.style.width = `${ganttPct(to) - ganttPct(from)}%`;
-      block.style.backgroundColor = color;
+      block.style.setProperty('--tone', color);
       block.dataset.bookingId = b.id;
       block.title = bookingPill(b).title;
-      const sub = div('gantt-block-subtitle', `${b.start}\u2013${b.end} \u00b7 ${bookerLabel(b)}`);
-      block.append(div('gantt-block-title', `${b.recurrenceGroupId ? '\u21bb ' : ''}${b.title}`), sub);
+
+      const title = div('gantt-block-title');
+      title.append(biIcon(b.recurrenceGroupId ? 'bi-arrow-repeat' : 'bi-calendar-event-fill'), div('gantt-block-text', b.title, 'span'));
+
+      const sub = div('gantt-block-subtitle');
+      sub.append(biIcon('bi-clock'), div('gantt-block-text', `${b.start}\u2013${b.end}`, 'span'));
+      sub.append(isMine(b) ? div('gantt-you-badge', 'You', 'span') : div('gantt-block-text', b.bookerName, 'span'));
+
+      block.append(title, sub);
       track.appendChild(block);
     });
 
@@ -1278,7 +1313,7 @@
     const i = Math.floor(((clientX - r.left) / r.width) * GANTT_SLOTS);
     return Math.min(Math.max(i, 0), GANTT_SLOTS - 1);
   };
-  const slotFree = (track, i) => !track.children[i].classList.contains('is-booked');
+  const slotFree = (track, i) => !track.children[i].matches('.is-booked, .is-past');
 
   function paintGanttSelection() {
     const { track, lo, hi } = ganttDrag;
@@ -1728,6 +1763,7 @@
     const suggested = prefill?.start ? prefill : suggestedTimes(prefillDate || '');
     $('#bookingDateInput').value = entry ? entry.date : (prefillDate || '');
     $('#bookingDateToInput').value = $('#bookingDateInput').value;
+    $('#bookingDateInput').min = !entry && !isAdmin ? toDateKey(new Date()) : ''; // no back-dating for non-admins
     $('#bookingDateToInput').min = $('#bookingDateInput').value;
     dateToFollowsFrom = true;
     // Editing changes one occurrence: a single "Date", no To.
@@ -1802,12 +1838,11 @@
       toast('The \u201cTo\u201d date can\u2019t be before the \u201cFrom\u201d date.', 'danger');
       return;
     }
-    // No booking into the past (5 min grace). When editing, only if the date/time was actually moved.
+    // No booking into the past (5 min grace) except for admins. When editing, only if the date/time was actually moved.
     const moved = !editingBooking
       || base.booking_date !== editingBooking.date || base.start_time !== editingBooking.start;
-    if (moved && parseDateOnly(base.booking_date).setHours(...base.start_time.split(':').map(Number))
-        < Date.now() - 5 * 60 * 1000) {
-      toast('You can\u2019t book a time in the past.', 'danger');
+    if (moved && isBackDated(base.booking_date, toMinutes(base.start_time))) {
+      toast('Only admins can book a time in the past.', 'danger');
       return;
     }
 
@@ -2578,7 +2613,7 @@
     yearSelect.addEventListener('change', () => goToMonth(Number(yearSelect.value), viewMonth));
     refreshBtn.addEventListener('click', () => { showError(null); run(); });
     viewBtns.grid.addEventListener('click', () => setViewMode('grid'));
-    viewBtns.gantt.addEventListener('click', () => setViewMode('gantt'));
+    viewBtns.gantt.addEventListener('click', () => showGanttFor(toDateKey(new Date())));
     dayInput.addEventListener('change', () => { if (dayInput.value) setGanttDate(dayInput.value); });
     ganttRows.addEventListener('click', onGanttClick);
     ganttRows.addEventListener('pointerdown', onGanttPointerDown);

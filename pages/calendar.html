@@ -96,20 +96,13 @@
 
           <!-- Gantt day view (Rooms mode): rendered by renderGantt() in calendar.js -->
           <div class="cal-gantt hidden" id="calGantt">
-            <div class="gantt-date-banner">
-              <div class="gantt-date-title">
-                <span class="gantt-badge"><i class="bi bi-calendar-event"></i>Daily room timeline</span>
-                <span class="gantt-date-label" id="ganttDateLabel"></span>
-              </div>
-              <span class="gantt-hint"><span class="gantt-hint-dot"></span>Free 30-min slot (click to book)</span>
-            </div>
             <div class="gantt-scroll">
               <div class="gantt-table">
                 <div class="gantt-header-row">
                   <div class="gantt-room-corner"><span>Rooms</span><span class="gantt-corner-sub">Capacity</span></div>
                   <div class="gantt-timeline-header" id="ganttHours"></div>
                 </div>
-                <div id="ganttRows"></div>
+                <div class="gantt-rows" id="ganttRows"></div>
               </div>
             </div>
           </div>
