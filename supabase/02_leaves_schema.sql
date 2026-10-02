@@ -14,7 +14,8 @@
 --   public.current_employee_uuid(), public.track_audit_columns() — all
 --   reused here, not redefined.
 --
--- Fresh setup:  run 01, then this file, then 03.
+-- Fresh setup:  run 01, then this file, then 03 (and 05, which creates public.holidays
+--   used by calculate_leave_request_total_days() when a request is saved).
 -- Existing DB:  re-run this file. It upgrades leave_types in place,
 --   migrates away from leave_type_policies (dropped — see below),
 --   creates/backfills the sequential approval-step machinery, and
@@ -1012,7 +1013,9 @@ create trigger trg_leave_requests_gender_restriction
 
 
 -- ---------------------------------------------------------------------
--- Trigger: compute total_days — UNCHANGED.
+-- Trigger: compute total_days.
+-- Public holidays (public.holidays, created in 05_calendar_schemas.sql) count
+-- as 0 days, except for count_calendar_days types (Maternity Leave).
 -- ---------------------------------------------------------------------
 create or replace function public.calculate_leave_request_total_days()
 returns trigger
@@ -1031,7 +1034,8 @@ begin
 
     -- Leave types with count_calendar_days (e.g. Maternity Leave) count
     -- every calendar day as a whole day instead of following the weekly
-    -- working pattern; half-day boundaries work the same way.
+    -- working pattern, holidays included; half-day boundaries work the same
+    -- way. All other types count a public holiday as 0.
     select coalesce(lt.count_calendar_days, false) into v_calendar
     from public.leave_types lt
     where lt.leave_type_id = new.leave_type_id;
@@ -1066,7 +1070,10 @@ begin
               from generate_series(0, new.end_date - new.start_date) as g(i)
            ) d
       join lateral (
-            select case when coalesce(v_calendar, false) then 1::numeric else pw.working_value end as working_value
+            select case when coalesce(v_calendar, false) then 1::numeric
+                        when exists (select 1 from public.holidays h where h.date = d.leave_day) then 0::numeric
+                        else pw.working_value
+                   end as working_value
             from public.policy_weekly_working_days pw
             where pw.day_of_week = extract(isodow from d.leave_day)::smallint
            ) w on true;

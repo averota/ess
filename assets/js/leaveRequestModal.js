@@ -46,6 +46,11 @@
    pre-checked, because they depend on the server's date). Like the cap
    line, the block is created here in JS — no page markup changes needed.
 
+   Public holidays (public.holidays, 05_calendar_schemas.sql) are not counted
+   as leave days, except for leave types with count_calendar_days (Maternity
+   Leave). The saved total comes from calculate_leave_request_total_days() in
+   02_leaves_schema.sql, which must apply the same rule.
+
    Usage (see leaves.js / calendar.js):
      await LeaveRequestModal.init({
        sb, isAdmin, myEmployeeId, myEmployeeName, showToast,
@@ -70,6 +75,11 @@
     if (!dateStr) return null;
     const [y, mo, da] = dateStr.split('-').map(Number);
     return new Date(y, mo - 1, da);
+  }
+
+  // Local date -> 'YYYY-MM-DD'.
+  function dateToStr(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
 
   function formatDateShort(dateStr) {
@@ -100,6 +110,7 @@
   let leaveTypes = [];
   let activeLeaveTypes = [];
   let weeklyWorkingDays = new Map();
+  let holidays = new Set();   // 'YYYY-MM-DD' of every public holiday (public.holidays)
   let selectableEmployees = [];
   let showOnBehalfField = false;
   let editingRequest = null; // full row being edited, or null when creating
@@ -146,6 +157,18 @@
       return;
     }
     weeklyWorkingDays = new Map((data || []).map(d => [d.day_of_week, Number(d.working_value)]));
+  }
+
+  // Holidays are excluded from the day count (except calendar-day leave types).
+  // On failure the set stays empty, i.e. the old behavior.
+  async function loadHolidays() {
+    const { data, error } = await sb.from('holidays').select('date');
+    if (error) {
+      console.error('leaveRequestModal: could not load holidays:', error);
+      holidays = new Set();
+      return;
+    }
+    holidays = new Set((data || []).map(h => h.date));
   }
 
   // Admins can file for anyone; everyone else goes through
@@ -398,11 +421,33 @@
     return !!(t && t.count_calendar_days);
   }
 
+  // Value of one day from the weekly working-day policy alone.
+  function patternWorkingValue(d) {
+    return weeklyWorkingDays.size ? (weeklyWorkingDays.get(isoDayOfWeek(d)) ?? 0) : 1;
+  }
+
+  // Calendar-day types count every day as 1 (holidays included); everything
+  // else follows the weekly pattern and counts a public holiday as 0.
+  function dayWorkingValue(d, calendar) {
+    if (calendar) return 1;
+    return holidays.has(dateToStr(d)) ? 0 : patternWorkingValue(d);
+  }
+
+  // Holidays that fall on days which would otherwise have counted.
+  function countExcludedHolidays(startD, endD) {
+    if (isCalendarType()) return 0;
+    let n = 0;
+    for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
+      if (holidays.has(dateToStr(d)) && patternWorkingValue(d) > 0) n++;
+    }
+    return n;
+  }
+
   function computeWorkingDays(startD, endD, startHalf, endHalf) {
     const calendar = isCalendarType();
     let total = 0;
     for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
-      const working = calendar ? 1 : (weeklyWorkingDays.size ? (weeklyWorkingDays.get(isoDayOfWeek(d)) ?? 0) : 1);
+      const working = dayWorkingValue(d, calendar);
       const whole = isWholeDayRequested(d, startD, endD, startHalf, endHalf);
       total += whole ? working : Math.min(working, 0.5);
     }
@@ -443,9 +488,10 @@
 
     const days = computeWorkingDays(startD, endD, startHalfDayInput.value, endHalfDayInput.value);
     previewDays = days;
+    const skipped = countExcludedHolidays(startD, endD);
     daysPreview.innerHTML =
       '<span><i class="bi bi-calculator me-1 text-primary"></i>Total Requested:</span>' +
-      `<span class="badge bg-primary text-white">${days} ${isCalendarType() ? 'calendar' : 'working'} day${days === 1 ? '' : 's'}</span>`;
+      `<span class="badge bg-primary text-white">${days} ${isCalendarType() ? 'calendar' : 'working'} day${days === 1 ? '' : 's'}${skipped ? ` · excl. ${skipped} holiday${skipped === 1 ? '' : 's'}` : ''}</span>`;
 
     // While the manual override is on, keep prefilling the (empty) input
     // with the calculated figure so the admin has a sane starting point.
@@ -461,7 +507,7 @@
   function addDaysToDateStr(str, n) {
     const d = parseDateOnly(str);
     d.setDate(d.getDate() + n);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return dateToStr(d);
   }
 
   function applyFixedDuration() {
@@ -514,8 +560,7 @@
 
   // Local calendar date as YYYY-MM-DD.
   function todayStr() {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    return dateToStr(new Date());
   }
 
   // Who the form is for: the edited request's employee, else the picker
@@ -786,6 +831,10 @@
   // 02 / 03 / 04 have the final say and their message is shown as-is.
   function blockingRuleMessage() {
     if (!targetEmployeeId()) return 'Choose who this request is for.';   // admin: no default employee
+    if (startDateInput.value && endDateInput.value && endDateInput.value < startDateInput.value) {
+      return 'End date must be on or after the start date.';
+    }
+    if (!reasonInput.value.trim()) return 'Please enter a reason.';
     const type = leaveTypeById(leaveTypeInput.value);
     const requested = requestedDays();
 
@@ -1049,6 +1098,7 @@
     manualDaysInputWrap = $('manualDaysInputWrap');
     manualDaysInput = $('manualDaysInput');
     reasonInput = $('reasonInput');
+    reasonInput.required = true;
     leaveRequestSubmitBtn = $('leaveRequestSubmitBtn');
     initEmployeeCombo();
 
@@ -1076,6 +1126,7 @@
     );
     manualDaysToggle.addEventListener('change', onManualDaysToggleChange);
     manualDaysInput.addEventListener('input', paintRuleInfo);
+    reasonInput.addEventListener('input', updateSubmitState);
     // Employee, leave type and start date decide which leave year / who is
     // counted (and eligibility), so they refetch; everything else just repaints.
     leaveTypeInput.addEventListener('change', onLeaveTypeChange);
@@ -1086,7 +1137,7 @@
       el.addEventListener('change', refreshAllowedTypes)
     );
 
-    await Promise.all([loadLeaveTypes(), loadWeeklyWorkingDays(), loadSelectableEmployees()]);
+    await Promise.all([loadLeaveTypes(), loadWeeklyWorkingDays(), loadHolidays(), loadSelectableEmployees()]);
     populateEmployeeSelect();
   }
 
@@ -1103,7 +1154,7 @@
   // renames a leave type elsewhere on the page — keeping the request
   // form's dropdown in sync without a full re-init().
   async function refresh() {
-    await Promise.all([loadLeaveTypes(), loadSelectableEmployees()]);
+    await Promise.all([loadLeaveTypes(), loadHolidays(), loadSelectableEmployees()]);
     populateEmployeeSelect();
   }
 
