@@ -8,9 +8,65 @@
 -- (RPCs, direct admin updates, calendar page) with no client changes.
 -- Notification failures are swallowed: they can never block a leave action.
 --
--- ONE-TIME SETUP (SQL editor, not committed to source control):
---   select vault.create_secret('https://<project-ref>.supabase.co/functions/v1/leave-telegram-notify', 'leave_notify_url');
---   select vault.create_secret('<random string, same as edge secret LEAVE_NOTIFY_SECRET>',            'leave_notify_secret');
+-- SETUP (do once). Replace <project-ref> and <secret> everywhere.
+-- <secret> = any hard-to-guess text (letters/numbers/dashes). It must be
+-- IDENTICAL in step 1 and step 4, or the function answers 401.
+--
+-- 1) Edge function secrets
+--      CLI:       supabase secrets set TELEGRAM_BOT_TOKEN=<bot token>
+--                 supabase secrets set LEAVE_NOTIFY_SECRET=<secret>
+--      Dashboard: Edge Functions -> Secrets -> Add new secret
+--                 (TELEGRAM_BOT_TOKEN and LEAVE_NOTIFY_SECRET)
+--
+-- 2) Deploy the function (file: supabase/functions/leave-telegram-notify/index.ts)
+--      CLI:       supabase login
+--                 supabase link --project-ref <project-ref>
+--                 supabase functions deploy leave-telegram-notify --no-verify-jwt
+--                 (no CLI installed? prefix each command with `npx `)
+--      Dashboard: Edge Functions -> Deploy a new function (via editor),
+--                 name it leave-telegram-notify, paste index.ts, deploy,
+--                 then turn "Verify JWT" OFF for it.
+--
+-- 3) Run THIS file
+--      CLI:       copy this file to supabase/migrations/<YYYYMMDDHHMMSS>_leave_telegram_notify.sql
+--                 then run: supabase db push
+--                 (or simply paste it into the dashboard SQL editor)
+--      Dashboard: SQL Editor -> paste this whole file -> Run
+--
+-- 4) Save the two Vault secrets (SQL editor). Safe to re-run: creates
+--    them if missing, updates them if they already exist.
+--
+--      do $setup$
+--      declare
+--          v_url    constant text := 'https://<project-ref>.supabase.co/functions/v1/leave-telegram-notify';
+--          v_secret constant text := '<secret>';
+--      begin
+--          if exists (select 1 from vault.secrets where name = 'leave_notify_url') then
+--              perform vault.update_secret((select id from vault.secrets where name = 'leave_notify_url'), v_url);
+--          else
+--              perform vault.create_secret(v_url, 'leave_notify_url');
+--          end if;
+--
+--          if exists (select 1 from vault.secrets where name = 'leave_notify_secret') then
+--              perform vault.update_secret((select id from vault.secrets where name = 'leave_notify_secret'), v_secret);
+--          else
+--              perform vault.create_secret(v_secret, 'leave_notify_secret');
+--          end if;
+--      end
+--      $setup$;
+--
+--    Check (expect 2 rows):
+--      select name from vault.decrypted_secrets where name in ('leave_notify_url', 'leave_notify_secret');
+--
+-- 5) Each employee must have started a chat with the bot and have
+--    employees.telegram_chat_id set; others are skipped silently.
+--
+-- TROUBLESHOOTING
+--    Function logs: Dashboard -> Edge Functions -> leave-telegram-notify -> Logs
+--    DB call results (401 = secrets differ, 404 = wrong URL):
+--      select id, status_code, content, created from net._http_response order by created desc limit 5;
+--    Requires the supabase_vault and pg_net extensions (this file enables pg_net;
+--    enable Vault in Dashboard -> Integrations -> Vault, or: create extension if not exists supabase_vault;).
 -- =====================================================================
 
 create extension if not exists pg_net with schema extensions;
