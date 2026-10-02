@@ -26,8 +26,8 @@
 //
 // Bulk upload mirrors holidays.js: header-alias mapping, required-field
 // validation, in-file dedupe, editable preview grid, and separate
-// Append vs Overwrite actions that go through SECURITY DEFINER RPCs
-// (admin_append_employees / admin_overwrite_employees — see
+// Append vs Update-from-file actions that go through SECURITY DEFINER RPCs
+// (admin_append_employees / admin_merge_employees — see
 // 02_employees_page_functions.sql) so each bulk action runs as a single
 // atomic transaction server-side.
 // =====================================================================
@@ -59,6 +59,15 @@ const SCHEMA_FIELDS = {
     email:               ['email', 'emailaddress']
 };
 const REQUIRED_FIELDS = ['name', 'gender', 'position', 'department', 'business_unit', 'hired_date'];
+
+// Employee IDs are compared ignoring format: '123' = 123 = '123.0', '001' = '1',
+// 'EMP0001' = 'emp001'. Lower-case, drop whitespace and a trailing ".0", then strip
+// the leading zeros of the trailing digit run (a text prefix is kept: '1' != 'EMP0001').
+// Mirrors public.employee_code_key() in 01_employee_info_schema.sql — keep them in sync.
+function employeeCodeKey(code) {
+    const s = String(code ?? '').toLowerCase().replace(/\s+/g, '').replace(/^(\d+)\.0+$/, '$1');
+    return s === '' ? null : s.replace(/^(\D*)0*(\d+)$/, '$1$2');
+}
 const DATE_FIELDS = ['hired_date', 'probation_end_date', 'last_day'];
 
 // Bulk upload accepts "F"/"M" as shorthand for "female"/"male" gender
@@ -681,7 +690,7 @@ function clearAllFilters() {
 // Disabling only sets is_active = false — it never deletes a row, so it
 // can't affect employees already assigned to it, and it doesn't touch
 // bulk upload either: admin_resolve_core_employee_fields() (used by both
-// Append and Overwrite) matches/creates these rows directly and ignores
+// Append and Update from file) matches/creates these rows directly and ignores
 // is_active entirely.
 // ---------------------------------------------------------------------
 let lookupModal;
@@ -1551,7 +1560,7 @@ function renderTable(employees, totalCount) {
 // Blank bulk-upload template: just the header row the parser in
 // processRows() expects (see SCHEMA_FIELDS / HEADER_LABELS above), so
 // admins have a starting point that matches what "Upload Excel/CSV" and
-// admin_append_employees / admin_overwrite_employees actually require.
+// admin_append_employees / admin_merge_employees actually require.
 function onDownloadTemplateClick() {
     const headers = Object.keys(SCHEMA_FIELDS).map(f => HEADER_LABELS[f] || f);
     const worksheet = XLSX.utils.aoa_to_sheet([headers]);
@@ -1733,12 +1742,14 @@ async function onReactivateFromCard() {
 }
 
 // Front-end uniqueness check against the in-memory employee list, mirroring
-// the database's `employees_employee_id_key` unique constraint (exact,
-// case-sensitive match). Excludes the record being edited so saving an
-// employee without changing their own ID doesn't flag itself as a dupe.
+// the database's `employees_employee_id_key` unique constraint, but stricter:
+// IDs are compared ignoring format (see employeeCodeKey), so '001' clashes with '1'.
+// Excludes the record being edited so saving an employee without changing their
+// own ID doesn't flag itself as a dupe.
 function isEmployeeIdTaken(employeeId, excludeId) {
-    return currentEmployees.some(emp =>
-        emp.employee_id === employeeId && String(emp.id) !== String(excludeId)
+    const key = employeeCodeKey(employeeId);
+    return !!key && currentEmployees.some(emp =>
+        employeeCodeKey(emp.employee_id) === key && String(emp.id) !== String(excludeId)
     );
 }
 
@@ -2251,7 +2262,7 @@ function processRows(jsonRows) {
     const validRows = [];
     let duplicateInFileCount = 0;
     validRowsRaw.forEach(row => {
-        const empIdKey = row.employee_id ? row.employee_id.toLowerCase() : null;
+        const empIdKey = employeeCodeKey(row.employee_id);
         const emailKey = row.email ? row.email.toLowerCase() : null;
         const isDupInFile = (empIdKey && seenEmployeeIds.has(empIdKey)) || (emailKey && seenEmails.has(emailKey));
         if (isDupInFile) {
@@ -2266,12 +2277,13 @@ function processRows(jsonRows) {
     const existingIds = new Set();
     const existingEmails = new Set();
     currentEmployees.forEach(emp => {
-        if (emp.employee_id) existingIds.add(String(emp.employee_id).toLowerCase());
+        const codeKey = employeeCodeKey(emp.employee_id);
+        if (codeKey) existingIds.add(codeKey);
         if (emp.email) existingEmails.add(String(emp.email).toLowerCase());
     });
     let existingCount = 0;
     validRows.forEach(row => {
-        const empIdKey = row.employee_id ? row.employee_id.toLowerCase() : null;
+        const empIdKey = employeeCodeKey(row.employee_id);
         const emailKey = row.email ? row.email.toLowerCase() : null;
         if ((empIdKey && existingIds.has(empIdKey)) || (emailKey && existingEmails.has(emailKey))) {
             existingCount++;
@@ -2298,11 +2310,11 @@ async function handleEditPreviewRow(row, index) {
     const updated = await editRowDialog(row);
     if (!updated) return;
 
-    const empIdKey = updated.employee_id ? updated.employee_id.toLowerCase() : null;
+    const empIdKey = employeeCodeKey(updated.employee_id);
     const emailKey = updated.email ? updated.email.toLowerCase() : null;
     const isDuplicate = currentDataset.validRows.some((r, i) => {
         if (i === index) return false;
-        const rEmpId = r.employee_id ? r.employee_id.toLowerCase() : null;
+        const rEmpId = employeeCodeKey(r.employee_id);
         const rEmail = r.email ? r.email.toLowerCase() : null;
         return (empIdKey && rEmpId === empIdKey) || (emailKey && rEmail === emailKey);
     });
@@ -2485,31 +2497,43 @@ async function onAppendClick() {
     }
 }
 
-async function onOverwriteClick() {
+async function onOverwriteClick() {   // "Update from file": merge by Employee ID (button id kept for the markup/CSS)
     if (!currentDataset || currentDataset.validRows.length === 0) return;
 
     overwriteBtn.disabled = true;
     try {
         const confirmed = await showConfirmDialog({
-            title: 'Confirm overwrite',
-            message: `This will PERMANENTLY DELETE ALL existing rows in "employees" and replace them with ${currentDataset.validRows.length} record(s) from this file. This cannot be undone.`,
-            confirmLabel: 'Overwrite table',
+            title: 'Confirm update from file',
+            message: `This will update existing employees with the values from this file and add the ones that are not found (${currentDataset.validRows.length} row(s)). `
+                + 'Rows are matched by Employee ID, ignoring zeros and format (1 = 001); a row without an ID is matched by Email. '
+                + 'Employees that are not in the file are left unchanged, and leave history, balances, approvers and portal links are kept. '
+                + 'For the columns in the file, blank cells clear the value (e.g. a blank Last day or Supervisor). This cannot be undone.',
+            confirmLabel: 'Update from file',
             danger: true
         });
-        if (!confirmed) { overwriteBtn.disabled = false; showStatus('Overwrite cancelled.'); return; }
+        if (!confirmed) { overwriteBtn.disabled = false; showStatus('Update cancelled.'); return; }
 
-        showStatus('Overwriting table…');
-        const { data: insertedCount, error } = await sb.rpc('admin_overwrite_employees', { p_rows: currentDataset.validRows });
+        showStatus('Updating employees…');
+        const { data: result, error } = await sb.rpc('admin_merge_employees', {
+            p_rows: currentDataset.validRows,
+            p_columns: currentDataset.mappedFields
+        });
         if (error) throw error;
 
         resetUploadPreview();
         setUploadPanelOpen(false);
-        await loadLookups();
+        await loadLookups(); // new positions/departments/business units may have been created
         populateFixedSelects();
         await reloadEmployees();
-        showStatus(`<span class="num-emerald">Success — table overwritten with ${insertedCount} record(s).</span>`);
+
+        const r = result || {};
+        const parts = [`updated ${r.updated ?? 0}`, `added ${r.inserted ?? 0}`, `${r.unchanged ?? 0} already up to date`];
+        let msg = `Success — ${parts.join(', ')}.`;
+        if (r.untouched) msg += ` ${r.untouched} employee(s) not in the file were left unchanged.`;
+        if (r.email_kept) msg += ` ${r.email_kept} linked employee(s) kept their email (locked while portal access is linked).`;
+        showStatus(`<span class="num-emerald">${escapeHtml(msg)}</span>`);
     } catch (err) {
-        showStatus(`<span class="num-rose">Overwrite failed: ${escapeHtml(err.message || String(err))}</span>`);
+        showStatus(`<span class="num-rose">Update failed: ${escapeHtml(err.message || String(err))}</span>`);
     } finally {
         overwriteBtn.disabled = false;
     }

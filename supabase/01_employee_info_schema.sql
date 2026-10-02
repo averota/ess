@@ -4,12 +4,11 @@
 --
 -- Re-running this script: fully idempotent. Table/function/trigger/policy
 -- DDL uses IF NOT EXISTS / CREATE OR REPLACE / DROP...IF EXISTS + CREATE.
--- Lookup seed data (roles, genders, positions, departments, business units)
--- uses ON CONFLICT DO NOTHING. Sample employees are inserted ONLY when
--- public.employees is completely empty (first run on a fresh database), so
--- re-running never overwrites or deletes existing rows and never re-adds
--- sample people once any employee exists — real or sample, even if the
--- samples were later deleted.
+-- Seed data: only the fixed reference rows the CHECK constraints rely on
+-- (roles: user/admin, genders: female/male) plus the leave policy defaults in
+-- 02/03. No sample employees and no sample positions / departments / business
+-- units are created: add them from the Employees page, or let a bulk upload
+-- create the lookup values it needs. Re-running never overwrites existing rows.
 --
 -- Auth linking model (no service_role key required):
 --   - employees.email is optional and unique. Set it whenever an
@@ -136,13 +135,7 @@ create table if not exists public.positions (
 -- 03_add_lookup_active_flag.sql instead.
 alter table public.positions add column if not exists is_active boolean not null default true;
 
-insert into public.positions (position) values
-    ('Software Engineer'),
-    ('HR Executive'),
-    ('Accountant'),
-    ('Sales Manager'),
-    ('Operations Supervisor')
-on conflict (position) do nothing;
+-- (no sample positions: created from the Employees page or by bulk upload)
 
 create table if not exists public.departments (
     dept_id             serial primary key,
@@ -155,13 +148,7 @@ create table if not exists public.departments (
 alter table public.departments add column if not exists is_active boolean not null default true;
 alter table public.departments add column if not exists hod_id uuid;
 
-insert into public.departments (department) values
-    ('Information Technology'),
-    ('Human Resources'),
-    ('Finance'),
-    ('Sales'),
-    ('Operations')
-on conflict (department) do nothing;
+-- (no sample departments: created from the Employees page or by bulk upload)
 
 create table if not exists public.business_units (
     bu_id               serial primary key,
@@ -172,11 +159,7 @@ create table if not exists public.business_units (
 );
 alter table public.business_units add column if not exists is_active boolean not null default true;
 
-insert into public.business_units (business_unit) values
-    ('Headquarters'),
-    ('Regional Branch - North'),
-    ('Regional Branch - South')
-on conflict (business_unit) do nothing;
+-- (no sample business units: created from the Employees page or by bulk upload)
 
 
 -- ---------------------------------------------------------------------
@@ -368,49 +351,8 @@ where e.auth_user_id is null
   and lower(trim(e.email)) = lower(trim(u.email));
 
 
--- Sample employees: inserted ONLY when public.employees is empty (first run
--- on a fresh database). If any employee exists the whole block is skipped,
--- so re-running never adds sample rows next to real data, and never touches
--- edits to rows created earlier. The supervisor assignment sits inside the
--- same guard, so it only applies to sample rows created by this very run.
-do $$
-begin
-    if exists (select 1 from public.employees) then
-        raise notice 'public.employees is not empty — sample employees skipped';
-        return;
-    end if;
-
-    insert into public.employees
-        (name, gender, post_id, dept_id, bu_id, hired_date, last_day, role, email)
-    select v.name, v.gender, p.post_id, d.dept_id, b.bu_id, v.hired_date::date, v.last_day::date, v.role, v.email
-    from (
-        values
-            ('Rotha Mek',       0, 'HR Executive',           'Human Resources',           'Headquarters',             '2021-09-01', null,         1, 'admin@example.com'),
-            ('Sokha Chan',      0, 'HR Executive',            'Human Resources',           'Headquarters',             '2021-03-15', null,         0, 'sokha.chan@company.com'),
-            ('Dara Pich',       1, 'Software Engineer',       'Information Technology',    'Headquarters',             '2022-06-01', null,         0, 'dara.pich@company.com'),
-            ('Sreymom Kim',     0, 'Accountant',              'Finance',                   'Headquarters',             '2020-01-10', null,         0, 'sreymom.kim@company.com'),
-            ('Vichet Ly',       1, 'Sales Manager',           'Sales',                     'Regional Branch - North',  '2019-09-01', null,         0, 'vichet.ly@company.com'),
-            ('Bopha Sok',       0, 'Operations Supervisor',   'Operations',                'Regional Branch - South',  '2023-02-20', null,         0, 'bopha.sok@company.com'),
-            ('Rithy Vong',      1, 'Software Engineer',       'Information Technology',    'Headquarters',             '2018-11-05', '2024-12-31', 0, 'rithy.vong@company.com')
-    ) as v(name, gender, position, department, business_unit, hired_date, last_day, role, email)
-    join public.positions p on p.position = v.position
-    join public.departments d on d.department = v.department
-    join public.business_units b on b.business_unit = v.business_unit
-    on conflict (email) do nothing;
-
-    -- Demo data: make Rotha Mek the supervisor of the other sample employees.
-    update public.employees emp
-    set supervisor_id = sup.id
-    from public.employees sup
-    where sup.email = 'admin@example.com'
-      and emp.email in (
-          'sokha.chan@company.com', 'dara.pich@company.com', 'sreymom.kim@company.com',
-          'vichet.ly@company.com', 'bopha.sok@company.com', 'rithy.vong@company.com'
-      )
-      and emp.supervisor_id is null;
-
-end;
-$$;
+-- (no sample employees: the first admin signs in via the super admin account, then adds people
+-- from the Employees page or a bulk upload)
 
 
 -- =====================================================================
@@ -741,9 +683,34 @@ create trigger trg_employees_audit
     for each row
     execute function public.track_audit_columns();
 
+-- ---------------------------------------------------------------------
+-- Employee ID comparison key. Employee IDs are compared ignoring format:
+--   '123' = 123 = ' 123 ' = '123.0'   '001' = '1'   'EMP0001' = 'emp001' = 'EMP1'
+-- Rule: lower-case, drop whitespace, drop a trailing ".0" (spreadsheet numbers),
+-- then strip the leading zeros of the trailing digit run, keeping any text
+-- prefix. A prefix is NOT ignored: '1' and 'EMP0001' are different IDs.
+-- The same rule lives in employees.js (employeeCodeKey) — keep them in sync.
+-- ---------------------------------------------------------------------
+create or replace function public.employee_code_key(p_code text)
+returns text
+language sql
+immutable
+set search_path = ''
+as $$
+    select case
+        when s.v = '' then null
+        else regexp_replace(s.v, '^(\D*)0*(\d+)$', '\1\2')
+    end
+    from (
+        select regexp_replace(regexp_replace(lower(coalesce(p_code, '')), '\s+', '', 'g'), '^(\d+)\.0+$', '\1') as v
+    ) s;
+$$;
+
+create index if not exists idx_employees_code_key on public.employees (public.employee_code_key(employee_id));
+
 -- =====================================================================
 -- EMPLOYEES PAGE FUNCTIONS
--- (stat cards + spreadsheet Append/Overwrite for the Employees page —
+-- (stat cards + spreadsheet Append / Update-from-file for the Employees page —
 -- see 02_employees_page_functions.sql for standalone use/comments)
 -- =====================================================================
 
@@ -898,6 +865,16 @@ begin
         return v_id;
     end if;
 
+    -- Employee ID ignoring format ('1' = '001'; see employee_code_key)
+    select count(*), (array_agg(e.id))[1] into v_match_count, v_id
+        from public.employees e
+        where public.employee_code_key(e.employee_id) = public.employee_code_key(v_supervisor);
+    if v_match_count = 1 then
+        return v_id;
+    elsif v_match_count > 1 then
+        raise exception '% "%" matches more than one Employee ID — use the exact Employee ID', p_label, p_supervisor;
+    end if;
+
     select count(*), min(e.id) into v_match_count, v_id
         from public.employees e where lower(e.name) = lower(v_supervisor);
 
@@ -933,6 +910,14 @@ begin
     for r in select * from jsonb_array_elements(p_rows)
     loop
         begin
+            -- Employee ID already used, ignoring format ('001' = '1'): skip like a unique violation.
+            if public.employee_code_key(r->>'employee_id') is not null and exists (
+                select 1 from public.employees e
+                where public.employee_code_key(e.employee_id) = public.employee_code_key(r->>'employee_id')
+            ) then
+                continue;
+            end if;
+
             select f.gender_id, f.post_id, f.dept_id, f.bu_id, f.role_id
                 into v_gender_id, v_post_id, v_dept_id, v_bu_id, v_role_id
                 from public.admin_resolve_core_employee_fields(r) f;
@@ -963,12 +948,12 @@ begin
             if coalesce(trim(r->>'supervisor'), '') <> '' then
                 update public.employees
                 set supervisor_id = public.admin_resolve_supervisor(r->>'supervisor')
-                where employee_id = trim(r->>'employee_id');
+                where public.employee_code_key(employee_id) = public.employee_code_key(r->>'employee_id');
             end if;
             if coalesce(trim(r->>'second_line'), '') <> '' then
                 update public.employees
                 set second_line_id = public.admin_resolve_supervisor(r->>'second_line', 'Second line')
-                where employee_id = trim(r->>'employee_id');
+                where public.employee_code_key(employee_id) = public.employee_code_key(r->>'employee_id');
             end if;
         end if;
     end loop;
@@ -977,74 +962,234 @@ begin
 end;
 $$;
 
-create or replace function public.admin_overwrite_employees(p_rows jsonb)
-returns integer
+-- Bulk "Update from file": MERGE, never delete. Replaces the old
+-- admin_overwrite_employees, which deleted every employee and (through ON DELETE
+-- CASCADE) all leave requests, approvals, balance adjustments and employee-scoped
+-- approval rules, and cleared every department head.
+--
+--   - Rows are matched to existing employees by Employee ID, ignoring format
+--     (employee_code_key: '1' = '001' = 1.0). A row without an Employee ID is
+--     matched by Email; a row with neither is rejected (it cannot be matched).
+--   - Matched employee -> the file's values are applied; the row keeps its id, so
+--     leave history, balances, approval rules, department-head links and portal
+--     access all stay attached. Only columns present in the file (p_columns) are
+--     touched; a blank cell in a present column clears an optional value (Last
+--     day, Email, Supervisor, Second line). Probation end date can't be blank
+--     (NOT NULL): a blank keeps the current value.
+--   - Not matched -> inserted (Employee ID generated if the row has none).
+--   - Employees that are not in the file are left exactly as they are.
+--   - An employee linked to a portal account keeps their email (it is locked
+--     while linked); the count is reported as email_kept.
+--   - Two rows that resolve to the same employee ('1' and '001'), an email used
+--     by someone else, or a change that would remove the caller's own admin
+--     access abort the whole import (one transaction, nothing is saved).
+--
+-- Returns json: { inserted, updated, unchanged, untouched, email_kept }
+--   updated    = matched employees whose data actually changed
+--   unchanged  = matched employees already identical to the file
+--   untouched  = existing employees that are not in the file
+drop function if exists public.admin_overwrite_employees(jsonb);
+drop function if exists public.admin_merge_employees(jsonb, text[]);
+
+create or replace function public.admin_merge_employees(p_rows jsonb, p_columns text[] default null)
+returns json
 language plpgsql
 security definer
 set search_path = ''
 as $$
 declare
-    r jsonb;
-    v_gender_id smallint;
-    v_post_id   integer;
-    v_dept_id   integer;
-    v_bu_id     integer;
-    v_role_id   smallint;
-    v_count     integer := 0;
+    rec           record;
+    r             jsonb;
+    v_has         text[] := coalesce(p_columns, array[
+                      'employee_id','name','gender','position','department','business_unit',
+                      'supervisor','second_line','hired_date','probation_end_date','last_day','role','email']);
+    v_gender_id   smallint;
+    v_post_id     integer;
+    v_dept_id     integer;
+    v_bu_id       integer;
+    v_role_id     smallint;
+    v_code        text;
+    v_key         text;
+    v_email       text;
+    v_hired       date;
+    v_probation   date;
+    v_last_day    date;
+    v_emp         public.employees%rowtype;
+    v_found       boolean;
+    v_match_count integer;
+    v_id          uuid;
+    v_other       text;
+    v_new_email   text;
+    v_new_prob    date;
+    v_new_last    date;
+    v_new_role    smallint;
+    v_sup         uuid;
+    v_ids         uuid[] := '{}';
+    v_new_ids     uuid[] := '{}';
+    v_matched     uuid[] := '{}';
+    v_changed     uuid[] := '{}';
+    v_email_kept  integer := 0;
+    v_updated     integer;
+    v_matched_cnt integer;
+    v_untouched   integer;
 begin
     if not public.is_admin() then
         raise exception 'Only admins can perform this action';
     end if;
+    if p_rows is null or jsonb_typeof(p_rows) <> 'array' or jsonb_array_length(p_rows) = 0 then
+        raise exception 'No rows to import';
+    end if;
 
-    update public.positions      set modified_by = null;
-    update public.departments    set modified_by = null;
-    update public.business_units set modified_by = null;
-    update public.departments    set hod_id = null;   -- departments.hod_id references employees; without this the delete below fails once any HOD is set
-
-    delete from public.employees;
-
-    for r in select * from jsonb_array_elements(p_rows)
+    -- Pass 1: match / update / insert every row.
+    for rec in select t.value, t.ordinality as n from jsonb_array_elements(p_rows) with ordinality as t(value, ordinality)
     loop
+        r := rec.value;
+
         select f.gender_id, f.post_id, f.dept_id, f.bu_id, f.role_id
             into v_gender_id, v_post_id, v_dept_id, v_bu_id, v_role_id
             from public.admin_resolve_core_employee_fields(r) f;
 
-        insert into public.employees
-            (employee_id, name, gender, post_id, dept_id, bu_id,
-             hired_date, probation_end_date, last_day, role, email)
-        values (
-            nullif(trim(r->>'employee_id'), ''),
-            trim(r->>'name'),
-            v_gender_id, v_post_id, v_dept_id, v_bu_id,
-            (r->>'hired_date')::date,
-            nullif(r->>'probation_end_date', '')::date,
-            nullif(r->>'last_day', '')::date,
-            v_role_id,
-            nullif(trim(r->>'email'), '')
-        );
+        v_code      := nullif(regexp_replace(trim(coalesce(r->>'employee_id', '')), '^(\d+)\.0+$', '\1'), '');
+        v_key       := public.employee_code_key(v_code);
+        v_email     := nullif(trim(coalesce(r->>'email', '')), '');
+        v_hired     := (r->>'hired_date')::date;
+        v_probation := nullif(r->>'probation_end_date', '')::date;
+        v_last_day  := nullif(r->>'last_day', '')::date;
 
-        v_count := v_count + 1;
+        if v_key is null and v_email is null then
+            raise exception 'Row "%" has no Employee ID or Email, so it cannot be matched to an existing employee — add one of them (or use Append for brand-new people)', r->>'name';
+        end if;
+
+        -- find the existing employee
+        v_found := false;
+        if v_key is not null then
+            select count(*) into v_match_count from public.employees e
+                where public.employee_code_key(e.employee_id) = v_key;
+            if v_match_count > 1 then
+                raise exception 'Employee ID "%" matches more than one existing employee — make their Employee IDs distinct first', v_code;
+            end if;
+            if v_match_count = 1 then
+                select * into v_emp from public.employees e where public.employee_code_key(e.employee_id) = v_key;
+                v_found := true;
+            end if;
+        else
+            select * into v_emp from public.employees e where lower(trim(e.email)) = lower(v_email) limit 1;
+            v_found := found;
+        end if;
+
+        if v_found then
+            -- two file rows for the same person ('1' and '001', or the same email)
+            if v_emp.id = any(v_matched) or v_emp.id = any(v_new_ids) then
+                raise exception 'Two rows in the file are the same employee (%) — look for duplicate Employee IDs such as "1" and "001"', v_emp.employee_id;
+            end if;
+            v_matched := v_matched || v_emp.id;
+            v_id := v_emp.id;
+
+            v_new_email := v_emp.email;
+            if 'email' = any(v_has) then
+                if lower(coalesce(v_email, '')) = lower(coalesce(trim(v_emp.email), '')) then
+                    v_new_email := v_emp.email;                       -- same address (maybe different case)
+                elsif v_emp.auth_user_id is not null then
+                    v_email_kept := v_email_kept + 1;                 -- locked while portal access is linked
+                else
+                    v_new_email := v_email;
+                end if;
+            end if;
+            if v_new_email is not null and v_new_email is distinct from v_emp.email then
+                select e.employee_id into v_other from public.employees e
+                    where lower(trim(e.email)) = lower(v_new_email) and e.id <> v_emp.id limit 1;
+                if v_other is not null then
+                    raise exception 'Email "%" is already used by employee %', v_new_email, v_other;
+                end if;
+            end if;
+
+            v_new_prob := coalesce(v_probation,
+                case when v_emp.probation_end_date >= v_hired then v_emp.probation_end_date
+                     else (v_hired + interval '3 months')::date end);
+            v_new_last := case when 'last_day' = any(v_has) then v_last_day else v_emp.last_day end;
+            v_new_role := case when 'role'     = any(v_has) then v_role_id  else v_emp.role     end;
+
+            if (v_emp.name, v_emp.gender, v_emp.post_id, v_emp.dept_id, v_emp.bu_id, v_emp.hired_date,
+                v_emp.probation_end_date, v_emp.last_day, v_emp.role, v_emp.email)
+               is distinct from
+               (trim(r->>'name'), v_gender_id, v_post_id, v_dept_id, v_bu_id, v_hired,
+                v_new_prob, v_new_last, v_new_role, v_new_email)
+            then
+                update public.employees
+                set name = trim(r->>'name'), gender = v_gender_id, post_id = v_post_id, dept_id = v_dept_id,
+                    bu_id = v_bu_id, hired_date = v_hired, probation_end_date = v_new_prob,
+                    last_day = v_new_last, role = v_new_role, email = v_new_email
+                where id = v_emp.id;
+                v_changed := v_changed || v_emp.id;
+            end if;
+        else
+            if v_email is not null then
+                select e.employee_id into v_other from public.employees e
+                    where lower(trim(e.email)) = lower(v_email) limit 1;
+                if v_other is not null then
+                    raise exception 'Email "%" is already used by employee % (a different Employee ID than the file row "%")', v_email, v_other, coalesce(v_code, r->>'name');
+                end if;
+            end if;
+
+            insert into public.employees
+                (employee_id, name, gender, post_id, dept_id, bu_id,
+                 hired_date, probation_end_date, last_day, role, email)
+            values (v_code, trim(r->>'name'), v_gender_id, v_post_id, v_dept_id, v_bu_id,
+                    v_hired, v_probation, v_last_day, v_role_id, v_email)
+            returning id into v_id;
+            v_new_ids := v_new_ids || v_id;
+        end if;
+
+        v_ids[rec.n::integer] := v_id;
     end loop;
 
-    for r in select * from jsonb_array_elements(p_rows)
+    -- Pass 2: supervisors / second lines (every row now exists, so they can point at each other).
+    for rec in select t.value, t.ordinality as n from jsonb_array_elements(p_rows) with ordinality as t(value, ordinality)
     loop
-        if coalesce(trim(r->>'employee_id'), '') <> '' then
-            if coalesce(trim(r->>'supervisor'), '') <> '' then
-                update public.employees
-                set supervisor_id = public.admin_resolve_supervisor(r->>'supervisor')
-                where employee_id = trim(r->>'employee_id');
+        v_id := v_ids[rec.n::integer];
+
+        if 'supervisor' = any(v_has) then
+            v_sup := public.admin_resolve_supervisor(rec.value->>'supervisor');
+            if v_sup = v_id then
+                raise exception 'Employee "%" cannot be their own supervisor', rec.value->>'name';
             end if;
-            if coalesce(trim(r->>'second_line'), '') <> '' then
-                update public.employees
-                set second_line_id = public.admin_resolve_supervisor(r->>'second_line', 'Second line')
-                where employee_id = trim(r->>'employee_id');
+            update public.employees set supervisor_id = v_sup
+                where id = v_id and supervisor_id is distinct from v_sup;
+            if found and not (v_id = any(v_new_ids)) then v_changed := v_changed || v_id; end if;
+        end if;
+
+        if 'second_line' = any(v_has) then
+            v_sup := public.admin_resolve_supervisor(rec.value->>'second_line', 'Second line');
+            if v_sup = v_id then
+                raise exception 'Employee "%" cannot be their own second line', rec.value->>'name';
             end if;
+            update public.employees set second_line_id = v_sup
+                where id = v_id and second_line_id is distinct from v_sup;
+            if found and not (v_id = any(v_new_ids)) then v_changed := v_changed || v_id; end if;
         end if;
     end loop;
 
-    return v_count;
+    -- The importing admin must still be an admin afterwards.
+    if not public.is_admin() then
+        raise exception 'This file would remove your own admin access (your row would become a non-admin or inactive). Nothing was changed.';
+    end if;
+
+    select count(distinct x) into v_updated     from unnest(v_changed) x;
+    select count(distinct x) into v_matched_cnt from unnest(v_matched) x;
+    select count(*) into v_untouched from public.employees e where e.id <> all(v_ids);
+
+    return json_build_object(
+        'inserted',   coalesce(cardinality(v_new_ids), 0),
+        'updated',    v_updated,
+        'unchanged',  v_matched_cnt - v_updated,
+        'untouched',  v_untouched,
+        'email_kept', v_email_kept
+    );
 end;
 $$;
+
+revoke all on function public.admin_merge_employees(jsonb, text[]) from public, anon;
+grant execute on function public.admin_merge_employees(jsonb, text[]) to authenticated, service_role;
 
 -- =====================================================================
 -- Realtime helper (used at the bottom of 01-05).
