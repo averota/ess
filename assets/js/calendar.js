@@ -95,6 +95,9 @@
     return parseDateOnly(dateStr).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   }
 
+  const formatDateMedium = (dateStr) =>
+    parseDateOnly(dateStr).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+
   function trashIconSvg() {
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
       + '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>'
@@ -1135,6 +1138,7 @@
         .order('start_time', { ascending: true });
       if (error) throw error;
       bookingRows = data || [];
+      seriesRangeCache.clear(); // series may have changed (edit/delete/new booking)
       rebuildBookingsMap();
       renderCalendar();
     } finally {
@@ -1549,7 +1553,7 @@
   /* Room booking: create / edit / view / delete                          */
   /* ------------------------------------------------------------------ */
   const BOOKING_FIELDS = ['#bookingRoomInput', '#bookingDateInput', '#bookingDateToInput', '#bookingStartInput',
-    '#bookingEndInput', '#bookingTitleInput', '#bookingInviteesToggle', '#bookingInviteesInput', '#bookingNotesInput'];
+    '#bookingEndInput', '#bookingTitleInput', '#bookingInviteesToggle', '#bookingInviteesInput', '#bookingNotesToggle', '#bookingNotesInput'];
 
   // Comma-separated invitee text -> chips (built with textContent, so names stay inert).
   function renderInviteeChips(text) {
@@ -1564,11 +1568,13 @@
     }));
   }
 
-  // Invitees are optional: the input (and chip preview) only shows while the switch is on.
-  function setInviteesEnabled(on) {
-    $('#bookingInviteesToggle').checked = on;
-    $('#bookingInviteesBody').classList.toggle('hidden', !on);
+  // Invitees and notes are optional: their input only shows while the switch is on.
+  function setOptionalSection(name, on) {
+    $(`#booking${name}Toggle`).checked = on;
+    $(`#booking${name}Body`).classList.toggle('hidden', !on);
   }
+  const setInviteesEnabled = (on) => setOptionalSection('Invitees', on);
+  const setNotesEnabled = (on) => setOptionalSection('Notes', on);
 
   // "1h 30m" chip next to the End field; flags an end that isn't after the start.
   function updateBookingDuration() {
@@ -1766,9 +1772,11 @@
     $('#bookingDateInput').min = !entry && !isAdmin ? toDateKey(new Date()) : ''; // no back-dating for non-admins
     $('#bookingDateToInput').min = $('#bookingDateInput').value;
     dateToFollowsFrom = true;
-    // Editing changes one occurrence: a single "Date", no To.
-    $('#bookingDateToWrap').classList.toggle('hidden', !!entry);
-    $('#bookingDateLabelText').textContent = entry ? 'Date' : 'From';
+    // Editing changes one occurrence: a single "Date", no To. Viewing (read-only) a recurring
+    // booking shows the whole series as From/To instead (filled in by applySeriesRange()).
+    const seriesView = !!(entry && entry.recurrenceGroupId && !editable);
+    $('#bookingDateToWrap').classList.toggle('hidden', !!entry && !seriesView);
+    $('#bookingDateLabelText').textContent = entry && !seriesView ? 'Date' : 'From';
     $('#bookingStartInput').value = entry ? entry.start : suggested.start;
     $('#bookingEndInput').value = entry ? entry.end : suggested.end;
     $('#bookingTitleInput').value = entry ? entry.title : '';
@@ -1776,6 +1784,7 @@
     $('#bookingNotesInput').value = entry ? entry.notes || '' : '';
     renderInviteeChips(entry ? entry.invitees : '');
     setInviteesEnabled(!!(entry && entry.invitees));
+    setNotesEnabled(!!(entry && entry.notes));
     updateBookingDuration();
     hideBookingConflicts();
 
@@ -1792,7 +1801,8 @@
     note.classList.toggle('hidden', !inSeries);
     if (inSeries) {
       $('#bookingRecurrenceNoteText').textContent = `Part of a recurring series (${recurrenceLabel(entry.recurrenceRule).toLowerCase()}).`
-        + (editable ? ' Editing only changes this date.' : '');
+        + (editable ? ' Editing only changes this date.' : ` Viewing ${formatDateMedium(entry.date)}.`);
+      applySeriesRange(entry, editable);
     }
 
     const owner = $('#bookingOwnerLine');
@@ -1800,9 +1810,43 @@
     if (entry) $('#bookingOwnerText').textContent = `Booked by ${bookerLabel(entry).replace(/^You$/, 'you')}`;
 
     BOOKING_FIELDS.forEach((f) => { $(f).disabled = !editable; });
+    // Read-only view: don't show an empty, disabled invitees/notes section the creator never filled in.
+    $('#bookingInviteesSection').classList.toggle('hidden', !editable && !entry.invitees);
+    $('#bookingNotesSection').classList.toggle('hidden', !editable && !entry.notes);
     $('#bookingSubmitBtn').classList.toggle('hidden', !editable);
     $('#bookingDeleteBtn').classList.toggle('hidden', !entry || !editable);
     bookingModal.show();
+  }
+
+  // First/last date of a recurring series (one query per series, cached until the next bookings reload).
+  const seriesRangeCache = new Map(); // recurrence_group_id -> { from, to, count } | null
+  async function loadSeriesRange(groupId) {
+    if (!seriesRangeCache.has(groupId)) {
+      const { data, error } = await db.from('room_bookings')
+        .select('booking_date')
+        .eq('recurrence_group_id', groupId)
+        .order('booking_date', { ascending: true });
+      if (error) throw error;
+      const dates = (data || []).map((r) => r.booking_date);
+      seriesRangeCache.set(groupId, dates.length ? { from: dates[0], to: dates[dates.length - 1], count: dates.length } : null);
+    }
+    return seriesRangeCache.get(groupId);
+  }
+
+  // Read-only view: From/To become the series range. Edit: one date stays, the range goes in the note.
+  async function applySeriesRange(entry, editable) {
+    try {
+      const range = await loadSeriesRange(entry.recurrenceGroupId);
+      if (!range || editingBooking !== entry) return; // closed/replaced while loading
+      if (editable) {
+        $('#bookingRecurrenceNoteText').textContent += ` Series: ${formatDateMedium(range.from)} \u2013 ${formatDateMedium(range.to)} (${range.count} dates).`;
+      } else {
+        $('#bookingDateInput').value = range.from;
+        $('#bookingDateToInput').value = range.to;
+      }
+    } catch (err) {
+      console.warn('Could not load the series range:', err);
+    }
   }
 
   // update/delete blocked by RLS affect 0 rows without raising an error,
@@ -1818,7 +1862,8 @@
       start_time: $('#bookingStartInput').value,
       end_time: $('#bookingEndInput').value,
       title: $('#bookingTitleInput').value.trim(),
-      notes: $('#bookingNotesInput').value.trim() || null,
+      // switch off = no notes (the typed text is kept in the field in case it is switched back on)
+      notes: $('#bookingNotesToggle').checked ? $('#bookingNotesInput').value.trim() || null : null,
       // switch off = no invitees (the typed text is kept in the field in case it is switched back on)
       invitees: $('#bookingInviteesToggle').checked
         ? parseInvitees($('#bookingInviteesInput').value).join(', ') || null
@@ -2581,6 +2626,10 @@
     $('#bookingInviteesToggle').addEventListener('change', (e) => {
       setInviteesEnabled(e.target.checked);
       if (e.target.checked) $('#bookingInviteesInput').focus();
+    });
+    $('#bookingNotesToggle').addEventListener('change', (e) => {
+      setNotesEnabled(e.target.checked);
+      if (e.target.checked) $('#bookingNotesInput').focus();
     });
     ['#bookingStartInput', '#bookingEndInput'].forEach((sel) => {
       $(sel).addEventListener('input', updateBookingDuration);

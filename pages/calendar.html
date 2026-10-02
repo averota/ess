@@ -477,7 +477,7 @@
 
           <!-- Invitees: optional, so the input only appears while the switch is on
                (see setInviteesEnabled()). Off = no invitees are saved. -->
-          <div>
+          <div id="bookingInviteesSection">
             <div class="booking-label-row">
               <label class="form-label-compact" for="bookingInviteesToggle">
                 <i class="bi bi-people text-secondary"></i>Invitees <span class="text-muted fw-normal text-lowercase">(optional)</span>
@@ -551,12 +551,20 @@
             </div>
           </div>
 
-          <!-- Notes -->
-          <div>
-            <label class="form-label-compact" for="bookingNotesInput">
-              <i class="bi bi-card-text text-secondary"></i>Notes <span class="text-muted fw-normal text-lowercase">(optional)</span>
-            </label>
-            <textarea class="form-control form-control-sm form-control-compact" id="bookingNotesInput" rows="2" maxlength="500" placeholder="Optional agenda, projector request, or meeting notes..."></textarea>
+          <!-- Notes: optional like invitees — the textarea only appears while the switch is on
+               (see setNotesEnabled()). Off = no notes are saved. -->
+          <div id="bookingNotesSection">
+            <div class="booking-label-row">
+              <label class="form-label-compact" for="bookingNotesToggle">
+                <i class="bi bi-card-text text-secondary"></i>Notes <span class="text-muted fw-normal text-lowercase">(optional)</span>
+              </label>
+              <div class="form-check form-switch booking-switch">
+                <input class="form-check-input" type="checkbox" role="switch" id="bookingNotesToggle" aria-label="Add notes">
+              </div>
+            </div>
+            <div id="bookingNotesBody" class="hidden">
+              <textarea class="form-control form-control-sm form-control-compact" id="bookingNotesInput" rows="2" maxlength="500" placeholder="Optional agenda, projector request, or meeting notes..." aria-label="Notes"></textarea>
+            </div>
           </div>
 
         </div>
